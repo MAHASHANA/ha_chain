@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ha_Chain — P2P Remittance</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50:'#f0fdf4', 100:'#dcfce7', 500:'#22c55e', 600:'#16a34a', 700:'#15803d', 800:'#166534', 900:'#14532d' },
+            dark: { 800:'#1e293b', 900:'#0f172a' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: #0f172a; color: #e2e8f0; }
+    .glass { background: rgba(30,41,59,0.7); backdrop-filter: blur(12px); border: 1px solid rgba(148,163,184,0.1); }
+    .glow { box-shadow: 0 0 20px rgba(34,197,94,0.15); }
+    .pulse-dot { animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+    .fade-in { animation: fadeIn 0.3s ease-in; }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+    .status-pending { color: #fbbf24; }
+    .status-partially_matched { color: #fb923c; }
+    .status-fully_matched, .status-filled, .status-settled { color: #22c55e; }
+    .status-expired, .status-cancelled, .status-failed { color: #ef4444; }
+    .status-pending_execution, .status-executing { color: #38bdf8; }
+    #toast { transition: all 0.3s ease; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+  <!-- Toast notification -->
+  <div id="toast" class="fixed top-4 right-4 z-50 hidden glass rounded-lg px-4 py-3 text-sm max-w-sm"></div>
+
+  <!-- ============================================================ -->
+  <!-- NAV BAR (hidden until logged in) -->
+  <!-- ============================================================ -->
+  <nav id="navbar" class="hidden sticky top-0 z-40 glass border-b border-slate-700/50">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-2">
+        <div class="w-8 h-8 rounded-lg bg-brand-600 flex items-center justify-center font-bold text-white text-sm">H</div>
+        <span class="font-bold text-lg text-white">Ha_Chain</span>
+        <span class="text-xs text-slate-400 ml-2">DEMO</span>
+      </div>
+      <div class="flex items-center gap-1">
+        <button onclick="showPage('dashboard')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="dashboard">Dashboard</button>
+        <button onclick="showPage('send')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="send">Send</button>
+        <button onclick="showPage('orders')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="orders">My Orders</button>
+        <button onclick="showPage('pool')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="pool">Live Pool</button>
+      </div>
+      <div class="flex items-center gap-3">
+        <span id="nav-user" class="text-sm text-slate-300"></span>
+        <button onclick="logout()" class="text-xs text-slate-400 hover:text-red-400">Logout</button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ============================================================ -->
+  <!-- AUTH PAGE -->
+  <!-- ============================================================ -->
+  <div id="page-auth" class="min-h-screen flex items-center justify-center p-4">
+    <div class="w-full max-w-md">
+      <div class="text-center mb-8">
+        <div class="w-16 h-16 rounded-2xl bg-brand-600 flex items-center justify-center font-bold text-white text-2xl mx-auto mb-4">H</div>
+        <h1 class="text-3xl font-bold text-white">Ha_Chain</h1>
+        <p class="text-slate-400 mt-2">P2P Remittance — Money Never Crosses Borders</p>
+      </div>
+
+      <div class="glass rounded-2xl p-6 glow">
+        <!-- Tabs -->
+        <div class="flex mb-6 bg-slate-800/50 rounded-lg p-1">
+          <button onclick="showAuthTab('login')" id="tab-login" class="flex-1 py-2 rounded-md text-sm font-medium bg-brand-600 text-white">Login</button>
+          <button onclick="showAuthTab('register')" id="tab-register" class="flex-1 py-2 rounded-md text-sm font-medium text-slate-400">Register</button>
+        </div>
+
+        <!-- Login Form -->
+        <form id="form-login" onsubmit="handleLogin(event)" class="space-y-4">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Email</label>
+            <input type="email" id="login-email" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="you@example.com">
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Password</label>
+            <input type="password" id="login-password" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="********">
+          </div>
+          <button type="submit" id="btn-login" class="w-full bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 rounded-lg text-sm transition">Login</button>
+        </form>
+
+        <!-- Register Form -->
+        <form id="form-register" onsubmit="handleRegister(event)" class="space-y-4 hidden">
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Full Name</label>
+            <input type="text" id="reg-name" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="Ali Khan">
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Email</label>
+            <input type="email" id="reg-email" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="ali@example.com">
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Phone</label>
+            <input type="tel" id="reg-phone" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="+12125551234">
+          </div>
+          <div>
+            <label class="text-xs text-slate-400 block mb-1">Password (8+ chars)</label>
+            <input type="password" id="reg-password" required minlength="8" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="********">
+          </div>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">Country</label>
+              <select id="reg-country" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500">
+                <option value="USA">USA</option>
+                <option value="IND">India</option>
+                <option value="MEX">Mexico</option>
+                <option value="PHL">Philippines</option>
+                <option value="GBR">UK</option>
+                <option value="NGA">Nigeria</option>
+                <option value="SOM">Somalia</option>
+                <option value="PAK">Pakistan</option>
+                <option value="ETH">Ethiopia</option>
+                <option value="DEU">Germany</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-400 block mb-1">Currency</label>
+              <select id="reg-currency" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500">
+                <option value="USD">USD</option>
+                <option value="INR">INR</option>
+                <option value="MXN">MXN</option>
+                <option value="PHP">PHP</option>
+                <option value="GBP">GBP</option>
+                <option value="NGN">NGN</option>
+                <option value="SOS">SOS</option>
+                <option value="PKR">PKR</option>
+                <option value="ETB">ETB</option>
+                <option value="EUR">EUR</option>
+              </select>
+            </div>
+          </div>
+          <button type="submit" id="btn-register" class="w-full bg-brand-600 hover:bg-brand-700 text-white font-medium py-2.5 rounded-lg text-sm transition">Create Account</button>
+        </form>
+      </div>
+
+      <p class="text-center text-xs text-slate-500 mt-4">Demo mode — all data resets on server restart</p>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- DASHBOARD PAGE -->
+  <!-- ============================================================ -->
+  <div id="page-dashboard" class="hidden max-w-6xl mx-auto p-4 pt-6 fade-in">
+    <div class="mb-6">
+      <h2 class="text-2xl font-bold text-white">Welcome back, <span id="dash-name" class="text-brand-500"></span></h2>
+      <p class="text-slate-400 text-sm mt-1">Your Ha_Chain P2P remittance dashboard</p>
+    </div>
+
+    <!-- Stats cards -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+      <div class="glass rounded-xl p-4">
+        <div class="text-xs text-slate-400 mb-1">Total Users</div>
+        <div id="stat-users" class="text-2xl font-bold text-white">-</div>
+      </div>
+      <div class="glass rounded-xl p-4">
+        <div class="text-xs text-slate-400 mb-1">Pending Orders</div>
+        <div id="stat-pending" class="text-2xl font-bold text-yellow-400">-</div>
+      </div>
+      <div class="glass rounded-xl p-4">
+        <div class="text-xs text-slate-400 mb-1">Matched Orders</div>
+        <div id="stat-matched" class="text-2xl font-bold text-brand-500">-</div>
+      </div>
+      <div class="glass rounded-xl p-4">
+        <div class="text-xs text-slate-400 mb-1">Volume Matched</div>
+        <div id="stat-volume" class="text-2xl font-bold text-white">-</div>
+      </div>
+    </div>
+
+    <!-- Quick actions -->
+    <div class="grid md:grid-cols-3 gap-4 mb-6">
+      <button onclick="showPage('send')" class="glass rounded-xl p-6 text-left hover:border-brand-500/30 transition group">
+        <div class="text-brand-500 text-lg mb-2">&#10132;</div>
+        <h3 class="font-semibold text-white group-hover:text-brand-400 transition">Send Money</h3>
+        <p class="text-xs text-slate-400 mt-1">Submit an order to the P2P matching pool</p>
+      </button>
+      <button onclick="showPage('orders')" class="glass rounded-xl p-6 text-left hover:border-brand-500/30 transition group">
+        <div class="text-blue-400 text-lg mb-2">&#9776;</div>
+        <h3 class="font-semibold text-white group-hover:text-blue-400 transition">My Orders</h3>
+        <p class="text-xs text-slate-400 mt-1">Track your matching orders and payments</p>
+      </button>
+      <button onclick="showPage('pool')" class="glass rounded-xl p-6 text-left hover:border-brand-500/30 transition group">
+        <div class="text-purple-400 text-lg mb-2">&#9881;</div>
+        <h3 class="font-semibold text-white group-hover:text-purple-400 transition">Live Pool</h3>
+        <p class="text-xs text-slate-400 mt-1">Watch matches happen in real-time</p>
+      </button>
+    </div>
+
+    <!-- Demo controls -->
+    <div class="glass rounded-xl p-4 border-yellow-500/20">
+      <h3 class="font-semibold text-yellow-400 text-sm mb-3">&#9889; Demo Controls</h3>
+      <div class="flex flex-wrap gap-3">
+        <button onclick="claimFaucet()" id="btn-faucet" class="bg-yellow-600/20 hover:bg-yellow-600/30 text-yellow-300 px-4 py-2 rounded-lg text-sm transition">
+          Get $1,000 Demo USDC
+        </button>
+        <button onclick="triggerMatching()" id="btn-match" class="bg-brand-600/20 hover:bg-brand-600/30 text-brand-400 px-4 py-2 rounded-lg text-sm transition">
+          Run Matching Engine
+        </button>
+      </div>
+      <p id="demo-result" class="text-xs text-slate-400 mt-2"></p>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- SEND MONEY PAGE -->
+  <!-- ============================================================ -->
+  <div id="page-send" class="hidden max-w-2xl mx-auto p-4 pt-6 fade-in">
+    <h2 class="text-2xl font-bold text-white mb-2">Send Money</h2>
+    <p class="text-slate-400 text-sm mb-6">Submit an order to the P2P matching pool. You'll be matched with someone who needs the opposite currencies.</p>
+
+    <div class="glass rounded-2xl p-6 glow">
+      <form onsubmit="handleSendOrder(event)" class="space-y-5">
+        <!-- You Send -->
+        <div>
+          <label class="text-xs text-slate-400 block mb-1">You have (source currency)</label>
+          <div class="flex gap-3">
+            <select id="send-source" class="flex-1 bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500">
+              <option value="USD">USD - US Dollar</option>
+              <option value="INR">INR - Indian Rupee</option>
+              <option value="MXN">MXN - Mexican Peso</option>
+              <option value="PHP">PHP - Philippine Peso</option>
+              <option value="GBP">GBP - British Pound</option>
+              <option value="NGN">NGN - Nigerian Naira</option>
+              <option value="EUR">EUR - Euro</option>
+              <option value="SOS">SOS - Somali Shilling</option>
+              <option value="PKR">PKR - Pakistani Rupee</option>
+              <option value="ETB">ETB - Ethiopian Birr</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Amount -->
+        <div>
+          <label class="text-xs text-slate-400 block mb-1">Amount</label>
+          <input type="number" id="send-amount" required min="1" step="0.01" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-lg font-mono focus:outline-none focus:border-brand-500" placeholder="500.00">
+        </div>
+
+        <!-- They Need -->
+        <div>
+          <label class="text-xs text-slate-400 block mb-1">Recipient needs (target currency)</label>
+          <select id="send-target" class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500">
+            <option value="INR">INR - Indian Rupee</option>
+            <option value="USD">USD - US Dollar</option>
+            <option value="MXN">MXN - Mexican Peso</option>
+            <option value="PHP">PHP - Philippine Peso</option>
+            <option value="GBP">GBP - British Pound</option>
+            <option value="NGN">NGN - Nigerian Naira</option>
+            <option value="EUR">EUR - Euro</option>
+            <option value="SOS">SOS - Somali Shilling</option>
+            <option value="PKR">PKR - Pakistani Rupee</option>
+            <option value="ETB">ETB - Ethiopian Birr</option>
+          </select>
+        </div>
+
+        <!-- Recipient info -->
+        <div>
+          <label class="text-xs text-slate-400 block mb-1">Recipient name</label>
+          <input type="text" id="send-recipient-name" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="Recipient's full name">
+        </div>
+        <div>
+          <label class="text-xs text-slate-400 block mb-1">Recipient account (UPI / phone / wallet)</label>
+          <input type="text" id="send-recipient-account" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="user@upi or +91xxxxx">
+        </div>
+
+        <!-- Fee estimate -->
+        <div class="bg-slate-800/30 rounded-lg p-3">
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-400">Protocol fee (0.05%)</span>
+            <span id="send-fee" class="text-white font-mono">$0.00</span>
+          </div>
+          <div class="flex justify-between text-sm mt-1">
+            <span class="text-slate-400">Max wait time</span>
+            <span class="text-white">4 hours</span>
+          </div>
+        </div>
+
+        <button type="submit" id="btn-send" class="w-full bg-brand-600 hover:bg-brand-700 text-white font-medium py-3 rounded-lg text-sm transition">
+          Submit to Matching Pool
+        </button>
+      </form>
+    </div>
+
+    <div class="glass rounded-xl p-4 mt-4 border-blue-500/20">
+      <p class="text-xs text-blue-300">
+        <strong>How it works:</strong> Your order enters the matching pool. When someone submits an opposite order
+        (e.g., you send USD&#8594;INR, they send INR&#8594;USD), the engine matches you. Money stays domestic &mdash; your
+        USD goes to their US recipient via ACH, their INR goes to your India recipient via UPI. Zero border crossing.
+      </p>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- MY ORDERS PAGE -->
+  <!-- ============================================================ -->
+  <div id="page-orders" class="hidden max-w-4xl mx-auto p-4 pt-6 fade-in">
+    <div class="flex justify-between items-center mb-6">
+      <div>
+        <h2 class="text-2xl font-bold text-white">My Orders</h2>
+        <p class="text-slate-400 text-sm mt-1">Track your matching orders</p>
+      </div>
+      <button onclick="loadMyOrders()" class="text-sm text-brand-400 hover:text-brand-300">Refresh</button>
+    </div>
+
+    <div id="orders-list" class="space-y-3">
+      <div class="glass rounded-xl p-8 text-center text-slate-400">
+        Loading orders...
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- LIVE POOL PAGE -->
+  <!-- ============================================================ -->
+  <div id="page-pool" class="hidden max-w-5xl mx-auto p-4 pt-6 fade-in">
+    <div class="flex justify-between items-center mb-6">
+      <div>
+        <h2 class="text-2xl font-bold text-white">Live Matching Pool</h2>
+        <p class="text-slate-400 text-sm mt-1">All orders and matches across the system</p>
+      </div>
+      <div class="flex gap-2">
+        <button onclick="triggerMatching().then(loadPool)" class="bg-brand-600/20 hover:bg-brand-600/30 text-brand-400 px-3 py-1.5 rounded-lg text-xs transition">
+          Run Matching
+        </button>
+        <button onclick="loadPool()" class="text-sm text-brand-400 hover:text-brand-300">Refresh</button>
+      </div>
+    </div>
+
+    <!-- All orders -->
+    <h3 class="text-sm font-semibold text-slate-300 mb-3">All Orders in Pool</h3>
+    <div id="pool-orders" class="space-y-2 mb-8">
+      <div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">Loading...</div>
+    </div>
+
+    <!-- Matches -->
+    <h3 class="text-sm font-semibold text-slate-300 mb-3">Executed Matches</h3>
+    <div id="pool-matches" class="space-y-2 mb-8">
+      <div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">Loading...</div>
+    </div>
+
+    <!-- Payments -->
+    <h3 class="text-sm font-semibold text-slate-300 mb-3">Local Payments (Settlements)</h3>
+    <div id="pool-payments" class="space-y-2">
+      <div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">Loading...</div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- JAVASCRIPT -->
+  <!-- ============================================================ -->
+  <script>
+    // ---------------------------------------------------------------
+    // State
+    // ---------------------------------------------------------------
+    const API = window.location.origin + '/api/v1';
+    let token = localStorage.getItem('ha_token');
+    let user = JSON.parse(localStorage.getItem('ha_user') || 'null');
+
+    // ---------------------------------------------------------------
+    // API helper
+    // ---------------------------------------------------------------
+    async function api(method, path, body = null, useAuth = true) {
+      const headers = { 'Content-Type': 'application/json' };
+      if (useAuth && token) headers['Authorization'] = `Bearer ${token}`;
+
+      const opts = { method, headers };
+      if (body) opts.body = JSON.stringify(body);
+
+      const res = await fetch(API + path, opts);
+      const text = await res.text();
+
+      let data;
+      try { data = JSON.parse(text); } catch (_) {
+        throw new Error('Server returned non-JSON response');
+      }
+
+      if (!res.ok) {
+        const msg = data.detail || JSON.stringify(data);
+        throw new Error(msg);
+      }
+      return data;
+    }
+
+    // ---------------------------------------------------------------
+    // Toast
+    // ---------------------------------------------------------------
+    function toast(msg, type = 'info') {
+      const el = document.getElementById('toast');
+      el.className = 'fixed top-4 right-4 z-50 glass rounded-lg px-4 py-3 text-sm max-w-sm';
+      if (type === 'error') el.classList.add('border-red-500/50', 'text-red-300');
+      else if (type === 'success') el.classList.add('border-brand-500/50', 'text-brand-300');
+      else el.classList.add('border-blue-500/50', 'text-blue-300');
+      el.textContent = msg;
+      el.classList.remove('hidden');
+      setTimeout(() => el.classList.add('hidden'), 4000);
+    }
+
+    // ---------------------------------------------------------------
+    // Auth
+    // ---------------------------------------------------------------
+    function showAuthTab(tab) {
+      document.getElementById('form-login').classList.toggle('hidden', tab !== 'login');
+      document.getElementById('form-register').classList.toggle('hidden', tab !== 'register');
+      document.getElementById('tab-login').className = tab === 'login'
+        ? 'flex-1 py-2 rounded-md text-sm font-medium bg-brand-600 text-white'
+        : 'flex-1 py-2 rounded-md text-sm font-medium text-slate-400';
+      document.getElementById('tab-register').className = tab === 'register'
+        ? 'flex-1 py-2 rounded-md text-sm font-medium bg-brand-600 text-white'
+        : 'flex-1 py-2 rounded-md text-sm font-medium text-slate-400';
+    }
+
+    async function handleRegister(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btn-register');
+      btn.disabled = true; btn.textContent = 'Creating...';
+      try {
+        const data = await api('POST', '/auth/register', {
+          full_name: document.getElementById('reg-name').value,
+          email: document.getElementById('reg-email').value,
+          phone: document.getElementById('reg-phone').value,
+          password: document.getElementById('reg-password').value,
+          country_code: document.getElementById('reg-country').value,
+          default_currency: document.getElementById('reg-currency').value,
+        }, false);
+
+        token = data.access_token;
+        user = { id: data.id, email: data.email, name: data.full_name, country: data.country_code };
+        localStorage.setItem('ha_token', token);
+        localStorage.setItem('ha_user', JSON.stringify(user));
+
+        // Auto-claim faucet for new users
+        try {
+          await fetch(API + '/demo/faucet?user_id=' + data.id + '&amount=1000&currency=USDC', { method: 'POST' });
+        } catch (_) {}
+
+        toast('Account created! You got $1,000 demo USDC.', 'success');
+        enterApp();
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Create Account';
+      }
+    }
+
+    async function handleLogin(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btn-login');
+      btn.disabled = true; btn.textContent = 'Logging in...';
+      try {
+        const data = await api('POST', '/auth/login', {
+          email: document.getElementById('login-email').value,
+          password: document.getElementById('login-password').value,
+        }, false);
+
+        token = data.access_token;
+        // Decode JWT to get user info
+        const payload = JSON.parse(atob(token.split('.')[1]));
+        user = { id: payload.sub, email: document.getElementById('login-email').value, name: '', country: '' };
+
+        // Fetch user profile
+        try {
+          const profile = await api('GET', '/users/me');
+          user.name = profile.full_name || profile.email;
+          user.country = profile.country_code || '';
+        } catch (_) {
+          user.name = user.email;
+        }
+
+        localStorage.setItem('ha_token', token);
+        localStorage.setItem('ha_user', JSON.stringify(user));
+        localStorage.setItem('ha_refresh', data.refresh_token);
+        toast('Logged in!', 'success');
+        enterApp();
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Login';
+      }
+    }
+
+    function logout() {
+      token = null; user = null;
+      localStorage.removeItem('ha_token');
+      localStorage.removeItem('ha_user');
+      localStorage.removeItem('ha_refresh');
+      document.getElementById('navbar').classList.add('hidden');
+      showPage('auth');
+    }
+
+    // ---------------------------------------------------------------
+    // Navigation
+    // ---------------------------------------------------------------
+    function showPage(name) {
+      document.querySelectorAll('[id^="page-"]').forEach(el => el.classList.add('hidden'));
+      const page = document.getElementById('page-' + name);
+      if (page) page.classList.remove('hidden');
+
+      // Highlight active nav
+      document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.classList.toggle('bg-slate-700/50', btn.dataset.page === name);
+        btn.classList.toggle('text-brand-400', btn.dataset.page === name);
+      });
+
+      // Load page data
+      if (name === 'dashboard') loadDashboard();
+      if (name === 'orders') loadMyOrders();
+      if (name === 'pool') loadPool();
+    }
+
+    function enterApp() {
+      document.getElementById('navbar').classList.remove('hidden');
+      document.getElementById('nav-user').textContent = user?.name || user?.email || '';
+      document.getElementById('dash-name').textContent = (user?.name || user?.email || '').split(' ')[0];
+      showPage('dashboard');
+    }
+
+    // ---------------------------------------------------------------
+    // Dashboard
+    // ---------------------------------------------------------------
+    async function loadDashboard() {
+      try {
+        const stats = await fetch(API + '/demo/stats').then(r => r.json());
+        document.getElementById('stat-users').textContent = stats.users;
+        document.getElementById('stat-pending').textContent = stats.pending_orders;
+        document.getElementById('stat-matched').textContent = stats.matched_orders;
+        document.getElementById('stat-volume').textContent = '$' + stats.total_volume_matched.toLocaleString();
+      } catch (_) {}
+    }
+
+    async function claimFaucet() {
+      const btn = document.getElementById('btn-faucet');
+      btn.disabled = true; btn.textContent = 'Crediting...';
+      try {
+        const res = await fetch(API + '/demo/faucet?user_id=' + user.id + '&amount=1000&currency=USDC', { method: 'POST' });
+        const data = await res.json();
+        document.getElementById('demo-result').textContent = `Credited $1,000 USDC. New balance: $${data.new_balance}`;
+        toast('Got $1,000 demo USDC!', 'success');
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Get $1,000 Demo USDC';
+      }
+    }
+
+    async function triggerMatching() {
+      const btn = document.getElementById('btn-match');
+      if (btn) { btn.disabled = true; btn.textContent = 'Matching...'; }
+      try {
+        const res = await fetch(API + '/demo/match-now', { method: 'POST' });
+        const stats = await res.json();
+        const msg = `Direct: ${stats.direct_matches}, Partial: ${stats.partial_matches}, Triangular: ${stats.triangular_matches}, LP fills: ${stats.lp_fills}, Payments: ${stats.payments_executed}`;
+        if (document.getElementById('demo-result')) {
+          document.getElementById('demo-result').textContent = 'Matching result: ' + msg;
+        }
+        if (stats.direct_matches + stats.partial_matches + stats.triangular_matches > 0) {
+          toast('Matches found! ' + msg, 'success');
+        } else {
+          toast('No matches found. Need opposite orders in the pool.', 'info');
+        }
+        loadDashboard();
+        return stats;
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Run Matching Engine'; }
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Send Money
+    // ---------------------------------------------------------------
+    document.getElementById('send-amount')?.addEventListener('input', () => {
+      const amt = parseFloat(document.getElementById('send-amount').value) || 0;
+      document.getElementById('send-fee').textContent = '$' + (amt * 0.0005).toFixed(2);
+    });
+
+    async function handleSendOrder(e) {
+      e.preventDefault();
+      const btn = document.getElementById('btn-send');
+      btn.disabled = true; btn.textContent = 'Submitting...';
+
+      const source = document.getElementById('send-source').value;
+      const target = document.getElementById('send-target').value;
+
+      if (source === target) {
+        toast('Source and target currency must be different', 'error');
+        btn.disabled = false; btn.textContent = 'Submit to Matching Pool';
+        return;
+      }
+
+      try {
+        const data = await api('POST', '/matching/orders?user_id=' + user.id, {
+          source_currency: source,
+          target_currency: target,
+          amount: parseFloat(document.getElementById('send-amount').value),
+          recipient_info: {
+            name: document.getElementById('send-recipient-name').value,
+            account: document.getElementById('send-recipient-account').value,
+            method: getPaymentMethod(target),
+          },
+          max_wait_hours: 4,
+        }, false);
+
+        toast(`Order submitted! ID: ${data.id.slice(0,8)}... Status: ${data.status}`, 'success');
+
+        // Reset form
+        document.getElementById('send-amount').value = '';
+        document.getElementById('send-recipient-name').value = '';
+        document.getElementById('send-recipient-account').value = '';
+
+        // Go to orders page
+        setTimeout(() => showPage('orders'), 1000);
+      } catch (err) {
+        toast(err.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Submit to Matching Pool';
+      }
+    }
+
+    function getPaymentMethod(currency) {
+      const map = { USD:'ach', INR:'upi', MXN:'spei', PHP:'gcash', GBP:'sepa', NGN:'mobile_money', EUR:'sepa', SOS:'zaad', PKR:'easypaisa', ETB:'telebirr' };
+      return map[currency] || 'bank_transfer';
+    }
+
+    // ---------------------------------------------------------------
+    // My Orders
+    // ---------------------------------------------------------------
+    async function loadMyOrders() {
+      const container = document.getElementById('orders-list');
+      try {
+        const orders = await fetch(API + '/demo/orders?limit=100').then(r => r.json());
+        const myOrders = orders.filter(o => o.user_id === user.id);
+
+        if (myOrders.length === 0) {
+          container.innerHTML = `
+            <div class="glass rounded-xl p-8 text-center">
+              <p class="text-slate-400 mb-3">No orders yet</p>
+              <button onclick="showPage('send')" class="bg-brand-600 hover:bg-brand-700 text-white px-4 py-2 rounded-lg text-sm">Send Money</button>
+            </div>`;
+          return;
+        }
+
+        container.innerHTML = myOrders.map(o => `
+          <div class="glass rounded-xl p-4">
+            <div class="flex items-center justify-between">
+              <div class="flex items-center gap-3">
+                <div class="text-lg font-mono font-bold text-white">${o.source_currency} &#8594; ${o.target_currency}</div>
+                <span class="status-${o.status} text-xs font-medium px-2 py-0.5 rounded-full bg-slate-800/50">${o.status.replace('_', ' ')}</span>
+              </div>
+              <div class="text-right">
+                <div class="font-mono text-white font-bold">$${o.amount.toLocaleString()}</div>
+                <div class="text-xs text-slate-400">${timeAgo(o.created_at)}</div>
+              </div>
+            </div>
+            <div class="mt-2 flex gap-4 text-xs text-slate-400">
+              <span>Matched: <span class="text-white font-mono">$${o.amount_matched.toLocaleString()}</span></span>
+              <span>Unmatched: <span class="text-yellow-300 font-mono">$${o.amount_unmatched.toLocaleString()}</span></span>
+              <span>ID: ${o.id.slice(0,8)}...</span>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        container.innerHTML = `<div class="glass rounded-xl p-4 text-red-400 text-sm">${err.message}</div>`;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Live Pool
+    // ---------------------------------------------------------------
+    async function loadPool() {
+      // Load all orders
+      const ordersEl = document.getElementById('pool-orders');
+      const matchesEl = document.getElementById('pool-matches');
+      const paymentsEl = document.getElementById('pool-payments');
+
+      try {
+        const [orders, matches, payments] = await Promise.all([
+          fetch(API + '/demo/orders?limit=50').then(r => r.json()),
+          fetch(API + '/demo/matches?limit=50').then(r => r.json()),
+          fetch(API + '/demo/payments?limit=50').then(r => r.json()),
+        ]);
+
+        // Orders
+        if (orders.length === 0) {
+          ordersEl.innerHTML = '<div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">No orders yet. Have friends register and submit orders!</div>';
+        } else {
+          ordersEl.innerHTML = `
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-xs text-slate-400 border-b border-slate-700/50">
+                    <th class="text-left py-2 px-3">Pair</th>
+                    <th class="text-left py-2 px-3">Amount</th>
+                    <th class="text-left py-2 px-3">Matched</th>
+                    <th class="text-left py-2 px-3">Status</th>
+                    <th class="text-left py-2 px-3">User</th>
+                    <th class="text-left py-2 px-3">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${orders.map(o => `
+                    <tr class="border-b border-slate-700/20 hover:bg-slate-700/20">
+                      <td class="py-2 px-3 font-mono font-bold text-white">${o.source_currency}&#8594;${o.target_currency}</td>
+                      <td class="py-2 px-3 font-mono">$${o.amount.toLocaleString()}</td>
+                      <td class="py-2 px-3 font-mono text-brand-400">$${o.amount_matched.toLocaleString()}</td>
+                      <td class="py-2 px-3"><span class="status-${o.status} text-xs">${o.status.replace('_',' ')}</span></td>
+                      <td class="py-2 px-3 text-xs text-slate-400">${o.user_id === user.id ? '<span class=text-brand-400>You</span>' : o.user_id.slice(0,6)+'...'}</td>
+                      <td class="py-2 px-3 text-xs text-slate-400">${timeAgo(o.created_at)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>`;
+        }
+
+        // Matches
+        if (matches.length === 0) {
+          matchesEl.innerHTML = '<div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">No matches yet. Submit opposite orders then click "Run Matching"!</div>';
+        } else {
+          matchesEl.innerHTML = `
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-xs text-slate-400 border-b border-slate-700/50">
+                    <th class="text-left py-2 px-3">Type</th>
+                    <th class="text-left py-2 px-3">Amount</th>
+                    <th class="text-left py-2 px-3">Fee</th>
+                    <th class="text-left py-2 px-3">Status</th>
+                    <th class="text-left py-2 px-3">Time</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${matches.map(m => `
+                    <tr class="border-b border-slate-700/20 hover:bg-slate-700/20">
+                      <td class="py-2 px-3">
+                        <span class="text-xs font-medium px-2 py-0.5 rounded-full ${m.match_type === 'triangular' ? 'bg-purple-500/20 text-purple-300' : 'bg-brand-500/20 text-brand-300'}">${m.match_type}</span>
+                      </td>
+                      <td class="py-2 px-3 font-mono font-bold text-white">$${m.amount.toLocaleString()}</td>
+                      <td class="py-2 px-3 font-mono text-slate-400">$${m.protocol_fee.toFixed(2)}</td>
+                      <td class="py-2 px-3"><span class="status-${m.status} text-xs">${m.status.replace('_',' ')}</span></td>
+                      <td class="py-2 px-3 text-xs text-slate-400">${timeAgo(m.created_at)}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>`;
+        }
+
+        // Payments
+        if (payments.length === 0) {
+          paymentsEl.innerHTML = '<div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">No payments executed yet.</div>';
+        } else {
+          paymentsEl.innerHTML = `
+            <div class="overflow-x-auto">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="text-xs text-slate-400 border-b border-slate-700/50">
+                    <th class="text-left py-2 px-3">Currency</th>
+                    <th class="text-left py-2 px-3">Amount</th>
+                    <th class="text-left py-2 px-3">Method</th>
+                    <th class="text-left py-2 px-3">TX Ref</th>
+                    <th class="text-left py-2 px-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${payments.map(p => `
+                    <tr class="border-b border-slate-700/20 hover:bg-slate-700/20">
+                      <td class="py-2 px-3 font-mono font-bold text-white">${p.currency}</td>
+                      <td class="py-2 px-3 font-mono">$${p.amount.toLocaleString()}</td>
+                      <td class="py-2 px-3 text-xs">${(p.payment_method || '-').toUpperCase()}</td>
+                      <td class="py-2 px-3 text-xs font-mono text-slate-400">${(p.tx_reference || '-').slice(0,12)}...</td>
+                      <td class="py-2 px-3"><span class="status-${p.status} text-xs">${p.status}</span></td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>`;
+        }
+      } catch (err) {
+        ordersEl.innerHTML = `<div class="glass rounded-lg p-4 text-red-400 text-sm">${err.message}</div>`;
+      }
+    }
+
+    // ---------------------------------------------------------------
+    // Utility
+    // ---------------------------------------------------------------
+    function timeAgo(dateStr) {
+      if (!dateStr) return '-';
+      const diff = (Date.now() - new Date(dateStr + (dateStr.endsWith('Z') ? '' : 'Z')).getTime()) / 1000;
+      if (diff < 60) return 'just now';
+      if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+      if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+      return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    // ---------------------------------------------------------------
+    // Init
+    // ---------------------------------------------------------------
+    if (token && user) {
+      // Verify token is still valid by checking a lightweight endpoint
+      fetch(API + '/demo/stats').then(r => {
+        if (r.ok) enterApp();
+        else { logout(); showPage('auth'); }
+      }).catch(() => { logout(); showPage('auth'); });
+    } else {
+      showPage('auth');
+    }
+  </script>
+</body>
+</html>

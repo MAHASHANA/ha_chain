@@ -29,6 +29,7 @@ from app.models.matching import (
 )
 from app.services.local_settlement import execute_local_payment
 from app.services.liquidity_service import LiquidityService, LP_SPREAD
+from app.services import fx_rates
 
 
 # Protocol fee on every matched amount: 0.05%
@@ -131,11 +132,28 @@ class MatchingEngine:
         if not counterparty:
             return None
 
-        matched_amount = min(order.amount_unmatched, counterparty.amount_unmatched)
-        fee = matched_amount * PROTOCOL_FEE
+        # Convert both amounts to USD for fair comparison
+        order_usd = await fx_rates.get_usd_value(order.amount_unmatched, order.source_currency)
+        counter_usd = await fx_rates.get_usd_value(counterparty.amount_unmatched, counterparty.source_currency)
+
+        # Matched value in USD
+        matched_usd = min(order_usd, counter_usd)
+        if matched_usd <= 0:
+            return None
+
+        # Convert matched USD back to each order's source currency
+        rate_to_order = await fx_rates.get_rate("USD", order.source_currency)
+        rate_to_counter = await fx_rates.get_rate("USD", counterparty.source_currency)
+        order_matched_in_source = round(matched_usd * rate_to_order, 2)
+        counter_matched_in_source = round(matched_usd * rate_to_counter, 2)
+
+        # Get the FX rate between the two currencies
+        fx_rate = await fx_rates.get_rate(order.source_currency, counterparty.source_currency)
+
+        fee = matched_usd * PROTOCOL_FEE
 
         match_type = "direct" if (
-            order.amount_unmatched == counterparty.amount_unmatched
+            abs(order_usd - counter_usd) < 0.01
         ) else "partial"
 
         match = Match(
@@ -144,18 +162,18 @@ class MatchingEngine:
             order_id_2=counterparty.id,
             order_id_3=None,
             match_type=match_type,
-            amount=matched_amount,
-            exchange_rate=1.0,  # No FX -- local payments only
-            protocol_fee=fee,
+            amount=round(matched_usd, 2),
+            exchange_rate=fx_rate,
+            protocol_fee=round(fee, 2),
             status="pending_execution",
         )
         self.db.add(match)
 
-        # Update order amounts
-        order.amount_matched += matched_amount
-        order.amount_unmatched -= matched_amount
-        counterparty.amount_matched += matched_amount
-        counterparty.amount_unmatched -= matched_amount
+        # Update order amounts in their own currencies
+        order.amount_matched += order_matched_in_source
+        order.amount_unmatched -= order_matched_in_source
+        counterparty.amount_matched += counter_matched_in_source
+        counterparty.amount_unmatched -= counter_matched_in_source
 
         now = _utcnow()
 
@@ -394,12 +412,16 @@ class MatchingEngine:
         if not order1 or not order2:
             return payments
 
+        # match.amount is in USD. Convert to each order's source currency.
+        amount_in_order1_currency = await fx_rates.convert(match.amount, "USD", order1.source_currency)
+        amount_in_order2_currency = await fx_rates.convert(match.amount, "USD", order2.source_currency)
+
         # Payment 1: order1's source currency to order2's recipient
         recipient_info_1 = order2.recipient_info or {}
         method_1 = recipient_info_1.get("method", None)
         result1 = await execute_local_payment(
             currency=order1.source_currency,
-            amount=match.amount,
+            amount=amount_in_order1_currency,
             recipient=recipient_info_1,
             method=method_1,
         )
@@ -408,7 +430,7 @@ class MatchingEngine:
             match_id=match.id,
             order_id=order1.id,
             currency=order1.source_currency,
-            amount=match.amount,
+            amount=amount_in_order1_currency,
             recipient_info=recipient_info_1,
             payment_method=result1.payment_method,
             payment_rail=result1.payment_method,
@@ -424,7 +446,7 @@ class MatchingEngine:
         method_2 = recipient_info_2.get("method", None)
         result2 = await execute_local_payment(
             currency=order2.source_currency,
-            amount=match.amount,
+            amount=amount_in_order2_currency,
             recipient=recipient_info_2,
             method=method_2,
         )
@@ -433,7 +455,7 @@ class MatchingEngine:
             match_id=match.id,
             order_id=order2.id,
             currency=order2.source_currency,
-            amount=match.amount,
+            amount=amount_in_order2_currency,
             recipient_info=recipient_info_2,
             payment_method=result2.payment_method,
             payment_rail=result2.payment_method,

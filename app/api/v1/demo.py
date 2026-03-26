@@ -183,3 +183,28 @@ async def demo_stats(db: AsyncSession = Depends(get_db)):
         "total_payments": payment_count,
         "total_volume_matched": round(float(total_volume), 2),
     }
+
+
+@demo_router.get("/fx-rate", summary="Get live exchange rate")
+async def get_fx_rate(source: str = "USD", target: str = "INR"):
+    """Get live exchange rate between two currencies."""
+    from app.services import fx_rates
+    rate = await fx_rates.get_rate(source.upper(), target.upper())
+    usd_value_of_1_source = await fx_rates.get_usd_value(1.0, source.upper())
+    return {
+        "source": source.upper(),
+        "target": target.upper(),
+        "rate": rate,
+        "usd_equivalent": usd_value_of_1_source,
+    }
+
+
+@demo_router.get("/fx-rates", summary="Get all exchange rates to USD")
+async def get_all_fx_rates():
+    """Get exchange rates for all supported currencies."""
+    from app.services.fx_rates import FALLBACK_RATES, get_rate
+    rates = {}
+    for currency in FALLBACK_RATES:
+        r = await get_rate(currency, "USD")
+        rates[currency] = round(r, 6)
+    return rates

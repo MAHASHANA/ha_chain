@@ -274,13 +274,21 @@
           <input type="text" id="send-recipient-account" required class="w-full bg-slate-800/50 border border-slate-600 rounded-lg px-3 py-2.5 text-white text-sm focus:outline-none focus:border-brand-500" placeholder="user@upi or +91xxxxx">
         </div>
 
-        <!-- Fee estimate -->
-        <div class="bg-slate-800/30 rounded-lg p-3">
+        <!-- FX rate + Fee estimate -->
+        <div class="bg-slate-800/30 rounded-lg p-3 space-y-1">
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-400">Live exchange rate</span>
+            <span id="send-rate" class="text-brand-400 font-mono">loading...</span>
+          </div>
+          <div class="flex justify-between text-sm">
+            <span class="text-slate-400">Recipient gets (approx)</span>
+            <span id="send-receive" class="text-white font-mono">-</span>
+          </div>
           <div class="flex justify-between text-sm">
             <span class="text-slate-400">Protocol fee (0.05%)</span>
             <span id="send-fee" class="text-white font-mono">$0.00</span>
           </div>
-          <div class="flex justify-between text-sm mt-1">
+          <div class="flex justify-between text-sm">
             <span class="text-slate-400">Max wait time</span>
             <span class="text-white">4 hours</span>
           </div>
@@ -580,10 +588,42 @@
     // ---------------------------------------------------------------
     // Send Money
     // ---------------------------------------------------------------
-    document.getElementById('send-amount')?.addEventListener('input', () => {
+    // Live FX rate updates
+    let currentFxRate = null;
+    async function updateFxRate() {
+      const src = document.getElementById('send-source').value;
+      const tgt = document.getElementById('send-target').value;
+      if (src === tgt) {
+        document.getElementById('send-rate').textContent = '1.0 (same currency)';
+        currentFxRate = 1.0;
+        updateSendEstimate();
+        return;
+      }
+      try {
+        const data = await fetch(API + `/demo/fx-rate?source=${src}&target=${tgt}`).then(r => r.json());
+        currentFxRate = data.rate;
+        document.getElementById('send-rate').textContent = `1 ${src} = ${data.rate.toFixed(2)} ${tgt}`;
+      } catch (_) {
+        document.getElementById('send-rate').textContent = 'unavailable';
+      }
+      updateSendEstimate();
+    }
+    function updateSendEstimate() {
       const amt = parseFloat(document.getElementById('send-amount').value) || 0;
-      document.getElementById('send-fee').textContent = '$' + (amt * 0.0005).toFixed(2);
-    });
+      const tgt = document.getElementById('send-target').value;
+      const src = document.getElementById('send-source').value;
+      document.getElementById('send-fee').textContent = (amt * 0.0005).toFixed(2) + ' ' + src;
+      if (currentFxRate && amt > 0) {
+        document.getElementById('send-receive').textContent = (amt * currentFxRate).toFixed(2) + ' ' + tgt;
+      } else {
+        document.getElementById('send-receive').textContent = '-';
+      }
+    }
+    document.getElementById('send-source')?.addEventListener('change', updateFxRate);
+    document.getElementById('send-target')?.addEventListener('change', updateFxRate);
+    document.getElementById('send-amount')?.addEventListener('input', updateSendEstimate);
+    // Fetch rate on page load
+    setTimeout(updateFxRate, 500);
 
     async function handleSendOrder(e) {
       e.preventDefault();
@@ -659,13 +699,13 @@
                 <span class="status-${o.status} text-xs font-medium px-2 py-0.5 rounded-full bg-slate-800/50">${o.status.replace('_', ' ')}</span>
               </div>
               <div class="text-right">
-                <div class="font-mono text-white font-bold">$${o.amount.toLocaleString()}</div>
+                <div class="font-mono text-white font-bold">${o.amount.toLocaleString()} ${o.source_currency}</div>
                 <div class="text-xs text-slate-400">${timeAgo(o.created_at)}</div>
               </div>
             </div>
             <div class="mt-2 flex gap-4 text-xs text-slate-400">
-              <span>Matched: <span class="text-white font-mono">$${o.amount_matched.toLocaleString()}</span></span>
-              <span>Unmatched: <span class="text-yellow-300 font-mono">$${o.amount_unmatched.toLocaleString()}</span></span>
+              <span>Matched: <span class="text-white font-mono">${o.amount_matched.toLocaleString()} ${o.source_currency}</span></span>
+              <span>Unmatched: <span class="text-yellow-300 font-mono">${o.amount_unmatched.toLocaleString()} ${o.source_currency}</span></span>
               <span>ID: ${o.id.slice(0,8)}...</span>
             </div>
           </div>
@@ -712,8 +752,8 @@
                   ${orders.map(o => `
                     <tr class="border-b border-slate-700/20 hover:bg-slate-700/20">
                       <td class="py-2 px-3 font-mono font-bold text-white">${o.source_currency}&#8594;${o.target_currency}</td>
-                      <td class="py-2 px-3 font-mono">$${o.amount.toLocaleString()}</td>
-                      <td class="py-2 px-3 font-mono text-brand-400">$${o.amount_matched.toLocaleString()}</td>
+                      <td class="py-2 px-3 font-mono">${o.amount.toLocaleString()} ${o.source_currency}</td>
+                      <td class="py-2 px-3 font-mono text-brand-400">${o.amount_matched.toLocaleString()} ${o.source_currency}</td>
                       <td class="py-2 px-3"><span class="status-${o.status} text-xs">${o.status.replace('_',' ')}</span></td>
                       <td class="py-2 px-3 text-xs text-slate-400">${o.user_id === user.id ? '<span class=text-brand-400>You</span>' : o.user_id.slice(0,6)+'...'}</td>
                       <td class="py-2 px-3 text-xs text-slate-400">${timeAgo(o.created_at)}</td>

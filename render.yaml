@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ha-chain
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite+aiosqlite:///./ha_chain_dev.db
+      - key: JWT_SECRET
+        value: ha-chain-demo-secret-2026
+      - key: STELLAR_NETWORK
+        value: testnet
+      - key: PYTHONUNBUFFERED
+        value: "1"

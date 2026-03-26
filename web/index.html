@@ -198,9 +198,31 @@
       </button>
     </div>
 
+    <!-- INVESTOR DEMO -->
+    <div class="glass rounded-2xl p-6 border-brand-500/30 glow mb-6">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h3 class="font-bold text-white text-lg">Investor Demo</h3>
+          <p class="text-xs text-slate-400">One click: create users, match orders, settle payments</p>
+        </div>
+        <button onclick="runScenario()" id="btn-scenario" class="bg-brand-600 hover:bg-brand-700 text-white font-semibold px-6 py-3 rounded-xl text-sm transition">
+          Run Live Demo
+        </button>
+      </div>
+
+      <!-- Scenario result (hidden until run) -->
+      <div id="scenario-result" class="hidden mt-4 space-y-4">
+        <!-- Timeline -->
+        <div id="scenario-timeline" class="space-y-3"></div>
+
+        <!-- Fee comparison table -->
+        <div id="scenario-fees" class="mt-4"></div>
+      </div>
+    </div>
+
     <!-- Demo controls -->
-    <div class="glass rounded-xl p-4 border-yellow-500/20">
-      <h3 class="font-semibold text-yellow-400 text-sm mb-3">&#9889; Demo Controls</h3>
+    <div class="glass rounded-xl p-4 border-slate-700/50">
+      <h3 class="font-semibold text-slate-400 text-sm mb-3">Manual Controls</h3>
       <div class="flex flex-wrap gap-3">
         <button onclick="claimFaucet()" id="btn-faucet" class="bg-yellow-600/20 hover:bg-yellow-600/30 text-yellow-300 px-4 py-2 rounded-lg text-sm transition">
           Get $1,000 Demo USDC
@@ -298,6 +320,13 @@
           Submit to Matching Pool
         </button>
       </form>
+    </div>
+
+    <!-- Fee comparison card -->
+    <div id="fee-compare-card" class="glass rounded-xl p-4 mt-4 border-brand-500/20 hidden">
+      <h4 class="text-sm font-semibold text-white mb-3">Fee Comparison — Sending <span id="fc-amount"></span></h4>
+      <div class="space-y-2" id="fc-rows"></div>
+      <div id="fc-savings" class="mt-3 text-sm font-semibold text-brand-400"></div>
     </div>
 
     <div class="glass rounded-xl p-4 mt-4 border-blue-500/20">
@@ -619,11 +648,112 @@
         document.getElementById('send-receive').textContent = '-';
       }
     }
-    document.getElementById('send-source')?.addEventListener('change', updateFxRate);
-    document.getElementById('send-target')?.addEventListener('change', updateFxRate);
-    document.getElementById('send-amount')?.addEventListener('input', updateSendEstimate);
-    // Fetch rate on page load
+    document.getElementById('send-source')?.addEventListener('change', () => { updateFxRate(); loadFeeComparison(); });
+    document.getElementById('send-target')?.addEventListener('change', () => { updateFxRate(); loadFeeComparison(); });
+    document.getElementById('send-amount')?.addEventListener('input', () => { updateSendEstimate(); loadFeeComparison(); });
     setTimeout(updateFxRate, 500);
+
+    // Fee comparison
+    let feeTimer = null;
+    async function loadFeeComparison() {
+      clearTimeout(feeTimer);
+      feeTimer = setTimeout(async () => {
+        const amt = parseFloat(document.getElementById('send-amount').value) || 0;
+        const src = document.getElementById('send-source').value;
+        const tgt = document.getElementById('send-target').value;
+        const card = document.getElementById('fee-compare-card');
+        if (amt <= 0 || src === tgt) { card.classList.add('hidden'); return; }
+        try {
+          const data = await fetch(API + `/demo/fee-compare?amount=${amt}&source=${src}&target=${tgt}`).then(r => r.json());
+          card.classList.remove('hidden');
+          document.getElementById('fc-amount').textContent = `${amt} ${src} to ${tgt}`;
+          const colors = ['text-brand-400', 'text-slate-300', 'text-yellow-300', 'text-red-400'];
+          document.getElementById('fc-rows').innerHTML = data.providers.map((p, i) => `
+            <div class="flex items-center justify-between py-1.5 ${i === 0 ? 'bg-brand-600/10 rounded-lg px-3 -mx-1' : ''}">
+              <span class="${colors[i]} text-sm font-medium">${p.name}${i === 0 ? ' *' : ''}</span>
+              <div class="text-right">
+                <span class="text-white font-mono text-sm">${p.recipient_gets.toLocaleString()} ${tgt}</span>
+                <span class="text-slate-400 text-xs ml-2">(fee: $${p.fee})</span>
+              </div>
+            </div>
+          `).join('');
+          document.getElementById('fc-savings').textContent = `You save $${data.savings_vs_wu} vs Western Union. Recipient gets ${(data.providers[0].recipient_gets - data.providers[3].recipient_gets).toLocaleString()} more ${tgt}.`;
+        } catch (_) { card.classList.add('hidden'); }
+      }, 400);
+    }
+
+    // Investor scenario
+    async function runScenario() {
+      const btn = document.getElementById('btn-scenario');
+      const resultDiv = document.getElementById('scenario-result');
+      const timeline = document.getElementById('scenario-timeline');
+      const feesDiv = document.getElementById('scenario-fees');
+
+      btn.disabled = true; btn.textContent = 'Running...';
+      resultDiv.classList.remove('hidden');
+      timeline.innerHTML = '<div class="text-sm text-slate-400">Creating users...</div>';
+
+      try {
+        const data = await fetch(API + '/demo/scenario', { method: 'POST' }).then(r => r.json());
+
+        // Animated timeline
+        const steps = [
+          { icon: '&#128100;', text: `<strong>Ali Khan</strong> (USA) sends <strong>$${data.amount_sent_usd} USD</strong> to India`, color: 'text-blue-400' },
+          { icon: '&#128100;', text: `<strong>Raj Patel</strong> (India) sends <strong>${data.fee_comparison.ha_chain.recipient_gets.toLocaleString()} INR</strong> to USA`, color: 'text-orange-400' },
+          { icon: '&#9889;', text: `<strong>Matched!</strong> ${data.matching.match_type} match in <strong>${data.elapsed_ms}ms</strong>`, color: 'text-brand-400' },
+          { icon: '&#9989;', text: `Ali's recipient gets <strong>${data.fee_comparison.ha_chain.recipient_gets.toLocaleString()} INR</strong> via UPI`, color: 'text-brand-400' },
+          { icon: '&#9989;', text: `Raj's recipient gets <strong>$${data.amount_sent_usd} USD</strong> via ACH`, color: 'text-brand-400' },
+          { icon: '&#128176;', text: `Protocol fee: <strong>$0.99</strong> | FX rate: 1 USD = ${data.fx_rate} INR`, color: 'text-slate-300' },
+        ];
+
+        timeline.innerHTML = '';
+        for (let i = 0; i < steps.length; i++) {
+          await new Promise(r => setTimeout(r, 400));
+          const s = steps[i];
+          timeline.innerHTML += `<div class="flex items-start gap-3 ${s.color} fade-in">
+            <span class="text-lg">${s.icon}</span>
+            <span class="text-sm">${s.text}</span>
+          </div>`;
+        }
+
+        // Fee comparison table
+        const fc = data.fee_comparison;
+        feesDiv.innerHTML = `
+          <div class="bg-slate-800/40 rounded-xl p-4 mt-2">
+            <h4 class="text-sm font-semibold text-white mb-3">Sending $${data.amount_sent_usd} USD to India</h4>
+            <div class="space-y-2">
+              <div class="flex justify-between items-center bg-brand-600/10 rounded-lg px-3 py-2">
+                <span class="text-brand-400 font-semibold text-sm">Ha_Chain</span>
+                <div><span class="text-white font-mono">${fc.ha_chain.recipient_gets.toLocaleString()} INR</span><span class="text-brand-400 text-xs ml-2">fee: $${fc.ha_chain.fee}</span></div>
+              </div>
+              <div class="flex justify-between items-center px-3 py-1.5">
+                <span class="text-slate-300 text-sm">Wise</span>
+                <div><span class="text-slate-300 font-mono">${fc.wise.recipient_gets.toLocaleString()} INR</span><span class="text-slate-400 text-xs ml-2">fee: $${fc.wise.fee}</span></div>
+              </div>
+              <div class="flex justify-between items-center px-3 py-1.5">
+                <span class="text-yellow-300 text-sm">Remitly</span>
+                <div><span class="text-yellow-300 font-mono">${fc.remitly.recipient_gets.toLocaleString()} INR</span><span class="text-slate-400 text-xs ml-2">fee: $${fc.remitly.fee}</span></div>
+              </div>
+              <div class="flex justify-between items-center px-3 py-1.5">
+                <span class="text-red-400 text-sm">Western Union</span>
+                <div><span class="text-red-400 font-mono">${fc.western_union.recipient_gets.toLocaleString()} INR</span><span class="text-slate-400 text-xs ml-2">fee: $${fc.western_union.fee}</span></div>
+              </div>
+            </div>
+            <div class="mt-3 pt-3 border-t border-slate-700/50 text-center">
+              <span class="text-brand-400 font-bold text-lg">You save $${fc.ha_chain.savings_vs_wu} vs Western Union</span>
+              <p class="text-xs text-slate-400 mt-1">Recipient gets ${(fc.ha_chain.recipient_gets - fc.western_union.recipient_gets).toLocaleString()} more INR</p>
+            </div>
+          </div>`;
+
+        loadDashboard();
+        toast('Demo complete! Matched in ' + data.elapsed_ms + 'ms', 'success');
+      } catch (err) {
+        timeline.innerHTML = `<div class="text-red-400 text-sm">${err.message}</div>`;
+        toast(err.message, 'error');
+      } finally {
+        btn.disabled = false; btn.textContent = 'Run Live Demo';
+      }
+    }
 
     async function handleSendOrder(e) {
       e.preventDefault();

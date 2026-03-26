@@ -185,6 +185,155 @@ async def demo_stats(db: AsyncSession = Depends(get_db)):
     }
 
 
+@demo_router.post("/scenario", summary="Run full investor demo scenario")
+async def run_scenario(db: AsyncSession = Depends(get_db)):
+    """One-click investor demo: creates 2 users, submits opposite orders,
+    runs matching, returns the complete story with fee comparison."""
+    import uuid
+    import time
+    from app.models.user import User, UserWallet
+    from app.core.security import hash_password
+    from app.services import fx_rates
+
+    start_time = time.time()
+
+    # Get live FX rate
+    rate = await fx_rates.get_rate("USD", "INR")
+    send_amount_usd = 500.0
+    receive_amount_inr = round(send_amount_usd * rate, 2)
+
+    # Create Ali (USA, sends USD -> INR)
+    ali_id = str(uuid.uuid4())
+    ali = User(
+        id=ali_id,
+        email=f"ali_{ali_id[:6]}@demo.com",
+        phone=f"+1{ali_id[:10].replace('-','')}",
+        password_hash=hash_password("demo1234"),
+        full_name="Ali Khan",
+        country_code="USA",
+        default_currency="USD",
+    )
+    db.add(ali)
+    ali_wallet = UserWallet(user_id=ali_id, currency="USDC", balance=10000, is_primary=True)
+    db.add(ali_wallet)
+
+    # Create Raj (India, sends INR -> USD)
+    raj_id = str(uuid.uuid4())
+    raj = User(
+        id=raj_id,
+        email=f"raj_{raj_id[:6]}@demo.com",
+        phone=f"+91{raj_id[:10].replace('-','')}",
+        password_hash=hash_password("demo1234"),
+        full_name="Raj Patel",
+        country_code="IND",
+        default_currency="INR",
+    )
+    db.add(raj)
+    raj_wallet = UserWallet(user_id=raj_id, currency="USDC", balance=10000, is_primary=True)
+    db.add(raj_wallet)
+    await db.flush()
+
+    # Submit orders
+    engine = MatchingEngine(db)
+
+    ali_order = await engine.submit_order(
+        user_id=ali_id,
+        source_currency="USD",
+        target_currency="INR",
+        amount=send_amount_usd,
+        recipient_info={"name": "Priya Sharma", "account": "priya@upi", "method": "upi"},
+    )
+
+    raj_order = await engine.submit_order(
+        user_id=raj_id,
+        source_currency="INR",
+        target_currency="USD",
+        amount=receive_amount_inr,
+        recipient_info={"name": "Mike Johnson", "account": "+14155559999", "method": "ach"},
+    )
+
+    # Run matching
+    stats = await engine.run_matching_cycle()
+    elapsed_ms = round((time.time() - start_time) * 1000)
+
+    # Reload orders
+    ali_order = (await db.execute(select(MatchOrder).where(MatchOrder.id == ali_order.id))).scalar_one()
+    raj_order = (await db.execute(select(MatchOrder).where(MatchOrder.id == raj_order.id))).scalar_one()
+
+    # Get payments
+    payments_q = await db.execute(select(LocalPayment).order_by(LocalPayment.created_at.desc()).limit(4))
+    payments = [
+        {"currency": p.currency, "amount": p.amount, "method": p.payment_method, "tx_ref": p.tx_reference, "status": p.status}
+        for p in payments_q.scalars().all()
+    ]
+
+    # Fee comparison
+    ha_chain_fee = 0.99
+    wise_fee = round(send_amount_usd * 0.00643 + 1.50, 2)
+    remitly_fee = round(send_amount_usd * 0.018, 2)
+    wu_fee = round(send_amount_usd * 0.036, 2)
+
+    wise_receive = round((send_amount_usd - wise_fee) * rate * 0.995, 2)  # 0.5% markup
+    remitly_receive = round((send_amount_usd - remitly_fee) * rate * 0.982, 2)  # 1.8% markup
+    wu_receive = round((send_amount_usd - wu_fee) * rate * 0.96, 2)  # 4% markup
+
+    return {
+        "scenario": "USA to India",
+        "sender": {"name": "Ali Khan", "country": "USA", "currency": "USD"},
+        "receiver": {"name": "Priya Sharma", "country": "India", "currency": "INR"},
+        "amount_sent_usd": send_amount_usd,
+        "fx_rate": round(rate, 2),
+        "matching": {
+            "ali_status": ali_order.status,
+            "raj_status": raj_order.status,
+            "match_type": stats.get("direct_matches", 0) > 0 and "direct" or "partial",
+            "stats": stats,
+        },
+        "payments": payments,
+        "fee_comparison": {
+            "ha_chain": {"fee": ha_chain_fee, "recipient_gets": receive_amount_inr, "savings_vs_wu": round(wu_fee - ha_chain_fee, 2)},
+            "wise": {"fee": wise_fee, "recipient_gets": wise_receive},
+            "remitly": {"fee": remitly_fee, "recipient_gets": remitly_receive},
+            "western_union": {"fee": wu_fee, "recipient_gets": wu_receive},
+        },
+        "elapsed_ms": elapsed_ms,
+        "message": f"${send_amount_usd} matched in {elapsed_ms}ms. Recipient gets {receive_amount_inr:,.2f} INR via UPI. Fee: $0.99. Western Union would charge ${wu_fee}."
+    }
+
+
+@demo_router.get("/fee-compare", summary="Compare fees for any amount")
+async def fee_compare(amount: float = 500, source: str = "USD", target: str = "INR"):
+    """Compare Ha_Chain fees vs competitors for a given transfer."""
+    from app.services import fx_rates
+    rate = await fx_rates.get_rate(source.upper(), target.upper())
+
+    ha_fee = 0.99
+    ha_receive = round((amount - ha_fee) * rate, 2)
+
+    wise_fee = round(amount * 0.00643 + 1.50, 2)
+    wise_receive = round((amount - wise_fee) * rate * 0.995, 2)
+
+    remitly_fee = round(amount * 0.018, 2)
+    remitly_receive = round((amount - remitly_fee) * rate * 0.982, 2)
+
+    wu_fee = round(amount * 0.036, 2)
+    wu_receive = round((amount - wu_fee) * rate * 0.96, 2)
+
+    return {
+        "amount": amount,
+        "source": source.upper(),
+        "target": target.upper(),
+        "rate": round(rate, 2),
+        "providers": [
+            {"name": "Ha_Chain", "fee": ha_fee, "recipient_gets": ha_receive, "fee_pct": round(ha_fee / amount * 100, 2)},
+            {"name": "Wise", "fee": wise_fee, "recipient_gets": wise_receive, "fee_pct": round(wise_fee / amount * 100, 2)},
+            {"name": "Remitly", "fee": remitly_fee, "recipient_gets": remitly_receive, "fee_pct": round(remitly_fee / amount * 100, 2)},
+            {"name": "Western Union", "fee": wu_fee, "recipient_gets": wu_receive, "fee_pct": round(wu_fee / amount * 100, 2)},
+        ],
+        "savings_vs_wu": round(wu_fee - ha_fee, 2),
+    }
+
+
 @demo_router.get("/fx-rate", summary="Get live exchange rate")
 async def get_fx_rate(source: str = "USD", target: str = "INR"):
     """Get live exchange rate between two currencies."""

@@ -25,11 +25,26 @@ from app.models.matching import (
 from app.services.matching_engine import MatchingEngine, PROTOCOL_FEE
 from app.services.liquidity_service import LiquidityService, LP_SPREAD
 from app.services.pool_manager import PoolManager
+from app.services import fx_rates
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def mock_fx_rates(monkeypatch):
+    """Mock FX rates to 1:1 for all currencies in tests."""
+    async def _get_rate(src, tgt):
+        return 1.0
+    async def _get_usd_value(amount, currency):
+        return amount
+    async def _convert(amount, src, tgt):
+        return amount
+    monkeypatch.setattr(fx_rates, "get_rate", _get_rate)
+    monkeypatch.setattr(fx_rates, "get_usd_value", _get_usd_value)
+    monkeypatch.setattr(fx_rates, "convert", _convert)
+
 
 @pytest_asyncio.fixture
 async def engine():

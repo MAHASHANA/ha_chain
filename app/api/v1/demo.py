@@ -117,6 +117,8 @@ async def list_all_matches(
             "amount": m.amount,
             "protocol_fee": m.protocol_fee,
             "status": m.status,
+            "stellar_tx_hash": m.stellar_tx_hash,
+            "stellar_explorer": f"https://stellar.expert/explorer/testnet/tx/{m.stellar_tx_hash}" if m.stellar_tx_hash else None,
             "created_at": m.created_at.isoformat() if m.created_at else None,
             "executed_at": m.executed_at.isoformat() if m.executed_at else None,
         }
@@ -357,3 +359,18 @@ async def get_all_fx_rates():
         r = await get_rate(currency, "USD")
         rates[currency] = round(r, 6)
     return rates
+
+
+@demo_router.get("/blockchain", summary="View on-chain transaction history")
+async def blockchain_explorer():
+    """Fetch recent Ha_Chain transactions recorded on Stellar testnet."""
+    from app.services import stellar_service
+    txs = await stellar_service.get_protocol_transactions(limit=30)
+    protocol_key = await stellar_service.ensure_protocol_account()
+    return {
+        "network": "Stellar Testnet",
+        "protocol_account": protocol_key,
+        "protocol_explorer": f"https://stellar.expert/explorer/testnet/account/{protocol_key}",
+        "transactions": txs,
+        "total": len(txs),
+    }

@@ -140,6 +140,9 @@ class Match(Base):
     # Status: pending_execution -> executing -> settled -> failed
     status: Mapped[str] = mapped_column(String(30), default="pending_execution", nullable=False, index=True)
 
+    # Stellar blockchain record
+    stellar_tx_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
     executed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
 

@@ -501,6 +501,22 @@ class MatchingEngine:
         match.status = "settled"
         match.executed_at = _utcnow()
 
+        # Record match on Stellar testnet (non-blocking — don't fail if Stellar is down)
+        try:
+            from app.services import stellar_service
+            stellar_tx = await stellar_service.record_match_on_chain(
+                match_id=match.id,
+                order1_source_currency=order1.source_currency if order1 else "???",
+                order1_target_currency=order1.target_currency if order1 else "???",
+                amount_usd=match.amount,
+                match_type=match.match_type,
+                fee=match.protocol_fee,
+            )
+            if stellar_tx and stellar_tx.success:
+                match.stellar_tx_hash = stellar_tx.tx_hash
+        except Exception:
+            pass  # Stellar recording is best-effort
+
         await self.db.flush()
         return payments
 

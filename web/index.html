@@ -53,6 +53,7 @@
         <button onclick="showPage('send')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="send">Send</button>
         <button onclick="showPage('orders')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="orders">My Orders</button>
         <button onclick="showPage('pool')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="pool">Live Pool</button>
+        <button onclick="showPage('chain')" class="nav-btn px-3 py-1.5 rounded-lg text-sm hover:bg-slate-700/50" data-page="chain">Blockchain</button>
       </div>
       <div class="flex items-center gap-3">
         <span id="nav-user" class="text-sm text-slate-300"></span>
@@ -394,6 +395,32 @@
   </div>
 
   <!-- ============================================================ -->
+  <!-- BLOCKCHAIN EXPLORER PAGE -->
+  <!-- ============================================================ -->
+  <div id="page-chain" class="hidden max-w-5xl mx-auto p-4 pt-6 fade-in">
+    <div class="flex justify-between items-center mb-6">
+      <div>
+        <h2 class="text-2xl font-bold text-white">On-Chain Records</h2>
+        <p class="text-slate-400 text-sm mt-1">Every match is recorded on Stellar testnet — immutable, verifiable</p>
+      </div>
+      <button onclick="loadBlockchain()" class="text-sm text-brand-400 hover:text-brand-300">Refresh</button>
+    </div>
+
+    <!-- Protocol account -->
+    <div id="chain-account" class="glass rounded-xl p-4 mb-6 border-purple-500/20">
+      <div class="text-xs text-slate-400 mb-1">Protocol Account (Stellar Testnet)</div>
+      <div id="chain-pubkey" class="font-mono text-sm text-purple-300 break-all">Loading...</div>
+      <a id="chain-account-link" href="#" target="_blank" class="text-xs text-purple-400 hover:text-purple-300 mt-1 inline-block">View on Stellar Explorer &#8599;</a>
+    </div>
+
+    <!-- Transactions -->
+    <h3 class="text-sm font-semibold text-slate-300 mb-3">On-Chain Transactions</h3>
+    <div id="chain-txs" class="space-y-2">
+      <div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">Loading...</div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
   <!-- JAVASCRIPT -->
   <!-- ============================================================ -->
   <script>
@@ -553,6 +580,7 @@
       if (name === 'dashboard') loadDashboard();
       if (name === 'orders') loadMyOrders();
       if (name === 'pool') loadPool();
+      if (name === 'chain') loadBlockchain();
     }
 
     function enterApp() {
@@ -907,6 +935,7 @@
                     <th class="text-left py-2 px-3">Amount</th>
                     <th class="text-left py-2 px-3">Fee</th>
                     <th class="text-left py-2 px-3">Status</th>
+                    <th class="text-left py-2 px-3">On-Chain</th>
                     <th class="text-left py-2 px-3">Time</th>
                   </tr>
                 </thead>
@@ -919,6 +948,7 @@
                       <td class="py-2 px-3 font-mono font-bold text-white">$${m.amount.toLocaleString()}</td>
                       <td class="py-2 px-3 font-mono text-slate-400">$${m.protocol_fee.toFixed(2)}</td>
                       <td class="py-2 px-3"><span class="status-${m.status} text-xs">${m.status.replace('_',' ')}</span></td>
+                      <td class="py-2 px-3">${m.stellar_tx_hash ? `<a href="${m.stellar_explorer}" target="_blank" class="text-purple-400 hover:text-purple-300 text-xs">Stellar &#8599;</a>` : '<span class="text-xs text-slate-500">-</span>'}</td>
                       <td class="py-2 px-3 text-xs text-slate-400">${timeAgo(m.created_at)}</td>
                     </tr>
                   `).join('')}
@@ -972,6 +1002,40 @@
       if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
       if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
       return Math.floor(diff / 86400) + 'd ago';
+    }
+
+    // ---------------------------------------------------------------
+    // Blockchain explorer
+    // ---------------------------------------------------------------
+    async function loadBlockchain() {
+      try {
+        const data = await fetch(API + '/demo/blockchain').then(r => r.json());
+        document.getElementById('chain-pubkey').textContent = data.protocol_account;
+        document.getElementById('chain-account-link').href = data.protocol_explorer;
+
+        const txsEl = document.getElementById('chain-txs');
+        if (data.transactions.length === 0) {
+          txsEl.innerHTML = '<div class="glass rounded-lg p-4 text-center text-slate-400 text-sm">No on-chain transactions yet. Run a demo or match orders first!</div>';
+          return;
+        }
+        txsEl.innerHTML = data.transactions.map(tx => `
+          <div class="glass rounded-lg p-4 hover:border-purple-500/30 transition">
+            <div class="flex items-center justify-between">
+              <div>
+                <span class="text-xs px-2 py-0.5 rounded-full ${tx.success ? 'bg-brand-500/20 text-brand-300' : 'bg-red-500/20 text-red-300'}">${tx.success ? 'confirmed' : 'failed'}</span>
+                <span class="text-white font-mono text-sm ml-2">${tx.memo || 'no memo'}</span>
+              </div>
+              <a href="${tx.explorer_url}" target="_blank" class="text-purple-400 hover:text-purple-300 text-xs">View on Stellar &#8599;</a>
+            </div>
+            <div class="mt-2 flex gap-4 text-xs text-slate-400">
+              <span>Hash: <span class="font-mono">${tx.tx_hash.slice(0, 16)}...</span></span>
+              <span>${timeAgo(tx.created_at)}</span>
+            </div>
+          </div>
+        `).join('');
+      } catch (err) {
+        document.getElementById('chain-txs').innerHTML = `<div class="glass rounded-lg p-4 text-red-400 text-sm">${err.message}</div>`;
+      }
     }
 
     // ---------------------------------------------------------------

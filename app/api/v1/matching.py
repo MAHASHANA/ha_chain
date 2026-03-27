@@ -37,12 +37,8 @@ router = APIRouter(prefix="/matching", tags=["matching"])
 # ---------------------------------------------------------------------------
 
 async def _get_db():
-    """Get async DB session.
-
-    In production this would use the real dependency; for now import from
-    app.database to avoid circular import issues with the full auth stack.
-    """
-    from app.database import get_db
+    """Get async DB session — uses the same engine as auth/users."""
+    from app.dependencies import get_db
     async for session in get_db():
         yield session
 

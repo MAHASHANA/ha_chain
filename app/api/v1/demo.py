@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
+from app.dependencies import get_db
 from app.models.matching import MatchOrder, Match, LocalPayment
 from app.services.matching_engine import MatchingEngine
 

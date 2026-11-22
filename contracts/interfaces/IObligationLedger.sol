@@ -31,4 +31,13 @@ interface IObligationLedger {
         uint256 amount,
         uint256 exchangeRate
     ) external;
+
+    /// @notice Add matched volume to a pool's running total
+    function addPoolVolume(bytes32 poolId, uint256 amount) external;
+
+    /// @notice Add to the running obligation from poolIdA to poolIdB
+    function updateObligation(bytes32 poolIdA, bytes32 poolIdB, uint256 amount) external;
+
+    /// @notice Associate a match with a user for history queries
+    function addUserMatch(address user, bytes32 matchId) external;
 }

@@ -18,3 +18,5 @@ node_modules/
 *.swo
 /mobile/android/.gradle/
 /mobile/android/app/build/
+contracts/out/
+contracts/cache/

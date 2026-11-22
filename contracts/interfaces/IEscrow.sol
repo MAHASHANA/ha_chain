@@ -22,13 +22,23 @@ interface IEscrow {
     /// @param recipient The address to receive the funds
     function releaseFunds(bytes32 escrowId, address recipient) external;
 
+    /// @notice Release part of an escrow to a recipient (partial match)
+    /// @param escrowId The escrow deposit identifier
+    /// @param recipient The address to receive the funds
+    /// @param grossAmount Gross amount to release; recipient gets it minus the protocol fee
+    function releasePartial(bytes32 escrowId, address recipient, uint256 grossAmount) external;
+
+    /// @notice Return the unmatched remainder to the depositor (cancel/expiry), fee-free
+    /// @param escrowId The escrow deposit identifier
+    function refundRemaining(bytes32 escrowId) external;
+
     /// @notice Refund escrowed funds after expiry
     /// @param escrowId The escrow deposit identifier
     function refund(bytes32 escrowId) external;
 
-    /// @notice Get the net amount (after fee) for an escrow deposit
+    /// @notice Get the gross amount still held for an escrow deposit
     /// @param escrowId The escrow deposit identifier
-    /// @return The amount available for release
+    /// @return The unreleased, unrefunded gross amount
     function getEscrowAmount(bytes32 escrowId) external view returns (uint256);
 
     /// @notice Check if an escrow deposit is active (not released, not refunded)

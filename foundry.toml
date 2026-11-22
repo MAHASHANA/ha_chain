@@ -1,0 +1,8 @@
+[profile.default]
+src = "contracts"
+test = "contracts/test"
+out = "contracts/out"
+cache_path = "contracts/cache"
+libs = ["contracts/lib"]
+solc_version = "0.8.24"
+remappings = ["forge-std/=contracts/lib/forge-std/src/"]

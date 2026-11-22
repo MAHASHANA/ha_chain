@@ -39,12 +39,12 @@ contract Escrow is IEscrow {
         address depositor;
         address token;
         uint256 amount;         // gross amount deposited
-        uint256 protocolFee;    // 0.05% of amount
-        uint256 netAmount;      // amount - protocolFee (what recipient gets)
+        uint256 remaining;      // gross amount not yet released or refunded
+        uint256 feesCharged;    // fees taken so far (only on matched portions)
         uint256 depositTime;
         uint256 expiryTime;
-        bool released;
-        bool refunded;
+        bool released;          // fully released through matches
+        bool refunded;          // unmatched remainder returned to depositor
     }
 
     // ──────────────────────────────────────────────
@@ -70,8 +70,6 @@ contract Escrow is IEscrow {
         address indexed depositor,
         address indexed token,
         uint256 amount,
-        uint256 protocolFee,
-        uint256 netAmount,
         uint256 expiryTime
     );
 
@@ -79,7 +77,9 @@ contract Escrow is IEscrow {
     event FundsReleased(
         bytes32 indexed escrowId,
         address indexed recipient,
-        uint256 amount
+        uint256 grossAmount,
+        uint256 fee,
+        uint256 netAmount
     );
 
     /// @dev Emitted when escrowed funds are refunded to the depositor
@@ -108,6 +108,7 @@ contract Escrow is IEscrow {
     error EscrowAlreadyRefunded();
     error EscrowNotExpired();
     error TransferFailed();
+    error ExceedsRemaining();
 
     // ──────────────────────────────────────────────
     //  Modifiers
@@ -150,9 +151,6 @@ contract Escrow is IEscrow {
         if (amount == 0) revert ZeroAmount();
         if (expiryTime <= block.timestamp) revert InvalidExpiry();
 
-        uint256 fee = (amount * FEE_BPS) / FEE_DENOMINATOR;
-        uint256 net = amount - fee;
-
         unchecked { ++_nonce; }
         escrowId = keccak256(abi.encodePacked(depositor, token, amount, _nonce, block.timestamp));
 
@@ -160,54 +158,47 @@ contract Escrow is IEscrow {
             depositor: depositor,
             token: token,
             amount: amount,
-            protocolFee: fee,
-            netAmount: net,
+            remaining: amount,
+            feesCharged: 0,
             depositTime: block.timestamp,
             expiryTime: expiryTime,
             released: false,
             refunded: false
         });
 
-        accumulatedFees[token] += fee;
-
-        emit FundsLocked(escrowId, depositor, token, amount, fee, net, expiryTime);
+        emit FundsLocked(escrowId, depositor, token, amount, expiryTime);
     }
 
     /// @inheritdoc IEscrow
+    /// @dev Releases the whole remaining balance. Equivalent to
+    ///      releasePartial(escrowId, recipient, remaining).
     function releaseFunds(bytes32 escrowId, address recipient) external override onlyMatchingPool {
-        if (recipient == address(0)) revert ZeroAddress();
-        EscrowDeposit storage dep = _deposits[escrowId];
-        if (dep.depositor == address(0)) revert EscrowNotFound();
-        if (dep.released) revert EscrowAlreadyReleased();
-        if (dep.refunded) revert EscrowAlreadyRefunded();
-
-        dep.released = true;
-
-        bool success = IERC20(dep.token).transfer(recipient, dep.netAmount);
-        if (!success) revert TransferFailed();
-
-        emit FundsReleased(escrowId, recipient, dep.netAmount);
+        _release(escrowId, recipient, _activeDeposit(escrowId).remaining);
     }
 
     /// @inheritdoc IEscrow
-    /// @dev Anyone can call this after the expiry time has passed.
-    ///      Refunds the full amount (including fee) to the depositor.
+    /// @dev The fee is charged only on the matched (released) portion.
+    function releasePartial(
+        bytes32 escrowId,
+        address recipient,
+        uint256 grossAmount
+    ) external override onlyMatchingPool {
+        _release(escrowId, recipient, grossAmount);
+    }
+
+    /// @inheritdoc IEscrow
+    /// @dev Used by MatchingPool on cancel / expiry. Returns the unmatched
+    ///      remainder in full: no fee, because nothing was matched.
+    function refundRemaining(bytes32 escrowId) external override onlyMatchingPool {
+        _refund(escrowId);
+    }
+
+    /// @inheritdoc IEscrow
+    /// @dev Anyone can call this after the expiry time has passed: a safety
+    ///      valve so funds can never be stuck if the MatchingPool is unused.
     function refund(bytes32 escrowId) external override {
-        EscrowDeposit storage dep = _deposits[escrowId];
-        if (dep.depositor == address(0)) revert EscrowNotFound();
-        if (dep.released) revert EscrowAlreadyReleased();
-        if (dep.refunded) revert EscrowAlreadyRefunded();
-        if (block.timestamp < dep.expiryTime) revert EscrowNotExpired();
-
-        dep.refunded = true;
-
-        // Refund full amount including fee (fee wasn't earned since no match)
-        accumulatedFees[dep.token] -= dep.protocolFee;
-
-        bool success = IERC20(dep.token).transfer(dep.depositor, dep.amount);
-        if (!success) revert TransferFailed();
-
-        emit FundsRefunded(escrowId, dep.depositor, dep.amount);
+        if (block.timestamp < _activeDeposit(escrowId).expiryTime) revert EscrowNotExpired();
+        _refund(escrowId);
     }
 
     /// @notice Withdraw accumulated protocol fees to treasury
@@ -226,12 +217,58 @@ contract Escrow is IEscrow {
     }
 
     // ──────────────────────────────────────────────
+    //  Internal
+    // ──────────────────────────────────────────────
+
+    function _activeDeposit(bytes32 escrowId) internal view returns (EscrowDeposit storage dep) {
+        dep = _deposits[escrowId];
+        if (dep.depositor == address(0)) revert EscrowNotFound();
+        if (dep.released) revert EscrowAlreadyReleased();
+        if (dep.refunded) revert EscrowAlreadyRefunded();
+    }
+
+    function _release(bytes32 escrowId, address recipient, uint256 grossAmount) internal {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (grossAmount == 0) revert ZeroAmount();
+        EscrowDeposit storage dep = _activeDeposit(escrowId);
+        if (grossAmount > dep.remaining) revert ExceedsRemaining();
+
+        uint256 fee = (grossAmount * FEE_BPS) / FEE_DENOMINATOR;
+        uint256 net = grossAmount - fee;
+
+        dep.remaining -= grossAmount;
+        dep.feesCharged += fee;
+        if (dep.remaining == 0) dep.released = true;
+        accumulatedFees[dep.token] += fee;
+
+        bool success = IERC20(dep.token).transfer(recipient, net);
+        if (!success) revert TransferFailed();
+
+        emit FundsReleased(escrowId, recipient, grossAmount, fee, net);
+    }
+
+    function _refund(bytes32 escrowId) internal {
+        EscrowDeposit storage dep = _activeDeposit(escrowId);
+        uint256 amount = dep.remaining;
+
+        dep.remaining = 0;
+        dep.refunded = true;
+
+        if (amount > 0) {
+            bool success = IERC20(dep.token).transfer(dep.depositor, amount);
+            if (!success) revert TransferFailed();
+        }
+
+        emit FundsRefunded(escrowId, dep.depositor, amount);
+    }
+
+    // ──────────────────────────────────────────────
     //  View Functions
     // ──────────────────────────────────────────────
 
     /// @inheritdoc IEscrow
     function getEscrowAmount(bytes32 escrowId) external view override returns (uint256) {
-        return _deposits[escrowId].netAmount;
+        return _deposits[escrowId].remaining;
     }
 
     /// @inheritdoc IEscrow

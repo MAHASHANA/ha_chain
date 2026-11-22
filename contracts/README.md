@@ -30,3 +30,27 @@ trusted anchor. All amounts are in USDC.
 
 For testing, use the mock implementations in `tests/mocks/mock_blockchain.py`.
 These simulate all blockchain operations in memory without network calls.
+
+## Solidity contracts: build and test (Foundry)
+
+```bash
+# one-time
+curl -L https://foundry.paradigm.xyz | bash && foundryup
+git submodule update --init --recursive   # pulls forge-std
+
+# from the repo root
+forge build
+forge test -vv
+```
+
+Tests live in `contracts/test/`. `MatchingPool.t.sol` covers escrow accounting:
+partial matches release only the matched amount, fees are charged only on matched
+volume, cancel/expiry refunds the unmatched remainder fee-free, and a fuzz test
+checks escrow solvency.
+
+**Known gap:** matches are 1:1 in token units (`exchangeRate = 1e18`). Cross-currency
+FX conversion is not implemented yet.
+
+**Deployment note:** `Escrow` and `ObligationLedger` take the `MatchingPool` address in
+their constructors and `MatchingPool` takes theirs, so deploy scripts must precompute the
+MatchingPool address (see `setUp()` in the test for the pattern).

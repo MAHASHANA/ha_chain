@@ -165,6 +165,7 @@ contract MatchingPool {
     error OrderAlreadyCancelled();
     error NotOrderOwner();
     error OrderNotExpired();
+    error OrderExpired();
     error PoolMismatch();
     error InsufficientAmount();
     error TransferFailed();
@@ -231,6 +232,9 @@ contract MatchingPool {
         if (recipient == address(0)) revert ZeroAddress();
         if (poolId == targetPoolId) revert SamePool();
         if (deadline <= block.timestamp) revert InvalidDeadline();
+        // Escrow expiry equals the order deadline, so the escrow can never be
+        // refunded out from under a still-open order.
+        if (deadline > block.timestamp + DEFAULT_ESCROW_DURATION) revert InvalidDeadline();
         if (!registry.isPoolActive(poolId)) revert InvalidPool();
         if (!registry.isPoolActive(targetPoolId)) revert InvalidPool();
 
@@ -246,11 +250,7 @@ contract MatchingPool {
         if (!success) revert TransferFailed();
 
         // Lock funds in escrow
-        uint256 expiryTime = deadline < block.timestamp + DEFAULT_ESCROW_DURATION
-            ? deadline
-            : block.timestamp + DEFAULT_ESCROW_DURATION;
-
-        bytes32 escrowId = escrow.lockFunds(token, msg.sender, amount, expiryTime);
+        bytes32 escrowId = escrow.lockFunds(token, msg.sender, amount, deadline);
 
         // Create order
         unchecked { ++_orderNonce; }
@@ -304,36 +304,15 @@ contract MatchingPool {
 
         bool isPartial = (order1.remainingAmount != order2.remainingAmount);
 
-        // Release escrowed funds to respective recipients
+        // Release ONLY the matched amount from each escrow:
         // Order1's funds go to Order2's recipient (Order2's depositor wanted Order1's currency)
         // Order2's funds go to Order1's recipient (Order1's depositor wanted Order2's currency)
-
-        if (order1.remainingAmount <= order2.remainingAmount) {
-            // Order1 is fully filled
-            escrow.releaseFunds(order1.escrowId, order2.recipient);
-            order1.remainingAmount = 0;
-            order1.filled = true;
-            _removeFromPool(orderId1, order1.poolId, order1.targetPoolId);
-        } else {
-            // Order1 is partially filled -- escrow releases full amount for now
-            // In partial matches, we release from the smaller order's escrow
-            escrow.releaseFunds(order1.escrowId, order2.recipient);
-            order1.remainingAmount -= matchAmount;
-            // Note: partial fill means order1's escrow is fully released but order
-            // remains open. In production, a new escrow would be created for the
-            // remaining amount. For simplicity, we mark as partially filled.
-        }
-
-        if (order2.remainingAmount <= order1.remainingAmount + matchAmount) {
-            // Order2 is fully filled (checking original amount via addition)
-            escrow.releaseFunds(order2.escrowId, order1.recipient);
-            order2.remainingAmount = 0;
-            order2.filled = true;
-            _removeFromPool(orderId2, order2.poolId, order2.targetPoolId);
-        } else {
-            escrow.releaseFunds(order2.escrowId, order1.recipient);
-            order2.remainingAmount -= matchAmount;
-        }
+        // Any unmatched remainder stays in escrow, backing the still-open order.
+        // NOTE: amounts are matched 1:1 across pools; FX conversion is not yet implemented.
+        escrow.releasePartial(order1.escrowId, order2.recipient, matchAmount);
+        escrow.releasePartial(order2.escrowId, order1.recipient, matchAmount);
+        _fill(order1, orderId1, matchAmount);
+        _fill(order2, orderId2, matchAmount);
 
         // Record on the obligation ledger
         bytes32 matchType = isPartial ? MATCH_PARTIAL : MATCH_DIRECT;
@@ -409,35 +388,12 @@ contract MatchingPool {
         // Order2's escrow (poolB tokens) -> Order1's recipient (Order1 wanted poolB)
         // Order3's escrow (poolC tokens) -> Order2's recipient (Order2 wanted poolC)
 
-        // Process Order1
-        escrow.releaseFunds(order1.escrowId, order3.recipient);
-        if (order1.remainingAmount == matchAmount) {
-            order1.remainingAmount = 0;
-            order1.filled = true;
-            _removeFromPool(orderId1, order1.poolId, order1.targetPoolId);
-        } else {
-            order1.remainingAmount -= matchAmount;
-        }
-
-        // Process Order2
-        escrow.releaseFunds(order2.escrowId, order1.recipient);
-        if (order2.remainingAmount == matchAmount) {
-            order2.remainingAmount = 0;
-            order2.filled = true;
-            _removeFromPool(orderId2, order2.poolId, order2.targetPoolId);
-        } else {
-            order2.remainingAmount -= matchAmount;
-        }
-
-        // Process Order3
-        escrow.releaseFunds(order3.escrowId, order2.recipient);
-        if (order3.remainingAmount == matchAmount) {
-            order3.remainingAmount = 0;
-            order3.filled = true;
-            _removeFromPool(orderId3, order3.poolId, order3.targetPoolId);
-        } else {
-            order3.remainingAmount -= matchAmount;
-        }
+        escrow.releasePartial(order1.escrowId, order3.recipient, matchAmount);
+        escrow.releasePartial(order2.escrowId, order1.recipient, matchAmount);
+        escrow.releasePartial(order3.escrowId, order2.recipient, matchAmount);
+        _fill(order1, orderId1, matchAmount);
+        _fill(order2, orderId2, matchAmount);
+        _fill(order3, orderId3, matchAmount);
 
         // Record on ledger
         ledger.recordTriangularMatch(orderId1, orderId2, orderId3, matchAmount, 1e18);
@@ -475,12 +431,8 @@ contract MatchingPool {
         order.cancelled = true;
         _removeFromPool(orderId, order.poolId, order.targetPoolId);
 
-        // Trigger escrow refund -- this requires the escrow to be expired
-        // or we need a cancel mechanism. For immediate cancellation, we
-        // release back to depositor through the escrow.
-        // Note: The escrow contract's refund() requires expiry. For cancellation
-        // before expiry, the MatchingPool (as authorized caller) releases to depositor.
-        escrow.releaseFunds(order.escrowId, order.depositor);
+        // Return the unmatched remainder to the depositor, fee-free.
+        escrow.refundRemaining(order.escrowId);
 
         emit OrderCancelled(orderId, order.depositor, order.remainingAmount);
     }
@@ -494,13 +446,13 @@ contract MatchingPool {
         if (order.depositor == address(0)) revert OrderNotFound();
         if (order.filled) revert OrderAlreadyFilled();
         if (order.cancelled) revert OrderAlreadyCancelled();
-        if (block.timestamp < order.deadline) revert OrderNotExpired();
+        if (block.timestamp <= order.deadline) revert OrderNotExpired();
 
         order.cancelled = true;
         _removeFromPool(orderId, order.poolId, order.targetPoolId);
 
-        // Refund through escrow (escrow expiry should have passed too)
-        escrow.refund(order.escrowId);
+        // Return the unmatched remainder to the depositor, fee-free.
+        escrow.refundRemaining(order.escrowId);
 
         emit OrderRefunded(orderId, order.depositor, order.remainingAmount);
     }
@@ -564,9 +516,18 @@ contract MatchingPool {
         if (order.depositor == address(0)) revert OrderNotFound();
         if (order.filled) revert OrderAlreadyFilled();
         if (order.cancelled) revert OrderAlreadyCancelled();
-        if (block.timestamp > order.deadline) revert OrderNotExpired();
+        if (block.timestamp > order.deadline) revert OrderExpired();
         // suppress unused variable warning
         orderId;
+    }
+
+    /// @dev Reduce an order's remaining amount; close it out when fully filled
+    function _fill(DepositOrder storage order, bytes32 orderId, uint256 amount) internal {
+        order.remainingAmount -= amount;
+        if (order.remainingAmount == 0) {
+            order.filled = true;
+            _removeFromPool(orderId, order.poolId, order.targetPoolId);
+        }
     }
 
     /// @dev Add an order to the active pool pair index

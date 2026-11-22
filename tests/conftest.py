@@ -19,6 +19,9 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
+# Tests always use in-memory SQLite, regardless of the developer's .env.
+os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
+
 # Ensure project root is on sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 

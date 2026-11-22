@@ -12,13 +12,18 @@ from app.config import get_settings
 
 settings = get_settings()
 
+# Pool tuning only applies to server databases; SQLite (tests, Render demo)
+# rejects pool_size/max_overflow.
+_pool_kwargs = (
+    {}
+    if settings.DATABASE_URL.startswith("sqlite")
+    else {"pool_size": 20, "max_overflow": 10, "pool_pre_ping": True, "pool_recycle": 300}
+)
+
 async_engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.DATABASE_ECHO,
-    pool_size=20,
-    max_overflow=10,
-    pool_pre_ping=True,
-    pool_recycle=300,
+    **_pool_kwargs,
 )
 
 async_session_factory = async_sessionmaker(

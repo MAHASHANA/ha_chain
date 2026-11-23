@@ -267,17 +267,30 @@ class MatchingEngine:
                     b_order = b_orders[0]  # Pick first available
                     c_order = c_orders[0]
 
-                    # The matched amount is the min across all three
-                    matched_amount = min(
-                        order.amount_unmatched,
-                        b_order.amount_unmatched,
-                        c_order.amount_unmatched,
-                    )
+                    # Compare legs by USD VALUE: the three orders are in
+                    # three different currencies, so raw amounts are not
+                    # comparable.
+                    legs = [order, b_order, c_order]
+                    leg_usd = [
+                        await fx_rates.get_usd_value(o.amount_unmatched, o.source_currency)
+                        for o in legs
+                    ]
+                    matched_usd = min(leg_usd)
 
-                    if matched_amount <= 0:
+                    if matched_usd <= 0:
                         continue
 
-                    fee = matched_amount * PROTOCOL_FEE
+                    # Matched value expressed in each order's own currency
+                    leg_matched = []
+                    for o, o_usd in zip(legs, leg_usd):
+                        if o_usd - matched_usd < 0.01:
+                            leg_matched.append(o.amount_unmatched)  # fully consumed: avoid rounding dust
+                        else:
+                            leg_matched.append(
+                                round(matched_usd * await fx_rates.get_rate("USD", o.source_currency), 2)
+                            )
+
+                    fee = matched_usd * PROTOCOL_FEE
 
                     match = Match(
                         id=_uuid(),
@@ -285,9 +298,9 @@ class MatchingEngine:
                         order_id_2=b_order.id,
                         order_id_3=c_order.id,
                         match_type="triangular",
-                        amount=matched_amount,
-                        exchange_rate=1.0,
-                        protocol_fee=fee,
+                        amount=round(matched_usd, 2),  # USD value, like direct matches
+                        exchange_rate=await fx_rates.get_rate(src, tgt),
+                        protocol_fee=round(fee, 2),
                         status="pending_execution",
                     )
                     self.db.add(match)
@@ -295,9 +308,9 @@ class MatchingEngine:
                     now = _utcnow()
 
                     # Update all three orders
-                    for o in [order, b_order, c_order]:
-                        o.amount_matched += matched_amount
-                        o.amount_unmatched -= matched_amount
+                    for o, amt in zip(legs, leg_matched):
+                        o.amount_matched += amt
+                        o.amount_unmatched -= amt
                         o.updated_at = now
                         if o.amount_unmatched <= 0:
                             o.amount_unmatched = 0.0
@@ -412,12 +425,25 @@ class MatchingEngine:
         if not order1 or not order2:
             return payments
 
+        order3 = None
+        if match.order_id_3:
+            order3_result = await self.db.execute(
+                select(MatchOrder).where(MatchOrder.id == match.order_id_3)
+            )
+            order3 = order3_result.scalar_one_or_none()
+
+        # Routing: each order's currency goes to the order that WANTS it.
+        #   direct:     order1 -> order2's recipient, order2 -> order1's recipient
+        #   triangular: order1 -> order3's recipient, order2 -> order1's recipient,
+        #               order3 -> order2's recipient
+        payee_of_order1 = order3 if order3 else order2
+
         # match.amount is in USD. Convert to each order's source currency.
         amount_in_order1_currency = await fx_rates.convert(match.amount, "USD", order1.source_currency)
         amount_in_order2_currency = await fx_rates.convert(match.amount, "USD", order2.source_currency)
 
-        # Payment 1: order1's source currency to order2's recipient
-        recipient_info_1 = order2.recipient_info or {}
+        # Payment 1: order1's source currency to whoever wants it
+        recipient_info_1 = payee_of_order1.recipient_info or {}
         method_1 = recipient_info_1.get("method", None)
         result1 = await execute_local_payment(
             currency=order1.source_currency,
@@ -467,35 +493,34 @@ class MatchingEngine:
         payments.append(payment2)
 
         # Triangular: third leg
-        if match.order_id_3:
-            order3_result = await self.db.execute(
-                select(MatchOrder).where(MatchOrder.id == match.order_id_3)
+        if order3:
+            # Payment 3: order3's source currency to order2's recipient
+            recipient_info_3 = order2.recipient_info or {}
+            method_3 = recipient_info_3.get("method", None)
+            amount_in_order3_currency = await fx_rates.convert(
+                match.amount, "USD", order3.source_currency
             )
-            order3 = order3_result.scalar_one_or_none()
-            if order3:
-                recipient_info_3 = order3.recipient_info or {}
-                method_3 = recipient_info_3.get("method", None)
-                result3 = await execute_local_payment(
-                    currency=order3.source_currency,
-                    amount=match.amount,
-                    recipient=recipient_info_3,
-                    method=method_3,
-                )
-                payment3 = LocalPayment(
-                    id=_uuid(),
-                    match_id=match.id,
-                    order_id=order3.id,
-                    currency=order3.source_currency,
-                    amount=match.amount,
-                    recipient_info=recipient_info_3,
-                    payment_method=result3.payment_method,
-                    payment_rail=result3.payment_method,
-                    tx_reference=result3.tx_id,
-                    status=result3.status,
-                    executed_at=result3.timestamp,
-                )
-                self.db.add(payment3)
-                payments.append(payment3)
+            result3 = await execute_local_payment(
+                currency=order3.source_currency,
+                amount=amount_in_order3_currency,
+                recipient=recipient_info_3,
+                method=method_3,
+            )
+            payment3 = LocalPayment(
+                id=_uuid(),
+                match_id=match.id,
+                order_id=order3.id,
+                currency=order3.source_currency,
+                amount=amount_in_order3_currency,
+                recipient_info=recipient_info_3,
+                payment_method=result3.payment_method,
+                payment_rail=result3.payment_method,
+                tx_reference=result3.tx_id,
+                status=result3.status,
+                executed_at=result3.timestamp,
+            )
+            self.db.add(payment3)
+            payments.append(payment3)
 
         # Update match status
         match.status = "settled"

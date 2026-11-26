@@ -277,7 +277,9 @@ Ha_Chain's matching model:
   USD never leaves the United States
   INR never leaves India
   No foreign exchange occurs
-  No AD bank bypass occurs (no forex = FEMA doesn't apply)
+  [CORRECTED -- see doc 22] FEMA STILL APPLIES: s.3(c) bars receiving
+  payment in India "on behalf of" a non-resident except through an
+  authorised person, even with no currency exchange
   No correspondent bank bypass occurs (no cross-border = SWIFT not needed)
 
   Each leg is a standard domestic bank transfer:
@@ -295,6 +297,8 @@ The key innovation:
   Ha_Chain USES regulated channels (ACH, UPI, USDC) → LEGAL
   Same economic result, different compliance reality
 ```
+
+> **Correction (Nov 2026, see doc 22 and doc 20 sec. 8-9):** Using regulated *rails* (ACH, UPI) for each leg is not the same as using an *authorised channel* for the overall cross-border obligation. Under FEMA, the India leg of an organized matching scheme is likely treated as hawala unless it runs through or for an Authorised Dealer bank, an MTSS principal or a PA-CB entity. The claim below is the design goal, not the current legal position.
 
 **Result:** Every leg of every transaction flows through a REGULATED channel. Domestic legs use regulated payment rails. Settlement uses regulated stablecoins. Nothing bypasses anything.
 

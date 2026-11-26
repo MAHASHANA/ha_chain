@@ -10,6 +10,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.enums import ComplianceAction, ComplianceCheckType
 from app.models.models import Transfer, User, Corridor, ComplianceCheck, SanctionsList
+from app.models.kyc import SanctionsCheck
+# The platform ``users`` table (what auth/register writes to). ``User`` above is
+# the legacy transfer-pipeline model and lacks the KYC/verification columns.
+from app.models.user import User as PlatformUser
 
 
 @dataclass
@@ -18,6 +22,22 @@ class ComplianceResult:
     reason: str
     checks: List[dict] = field(default_factory=list)
     risk_score: int = 0  # 0-100
+
+
+@dataclass
+class UserScreeningResult:
+    """Outcome of pre-trade screening for a matching-pool participant.
+
+    ``reason`` is for internal logs / compliance staff only. It must never be
+    returned to the end user (avoid "tipping off").
+    """
+    action: ComplianceAction
+    reason: str
+    checks: List[dict] = field(default_factory=list)
+
+    @property
+    def allowed(self) -> bool:
+        return self.action != ComplianceAction.BLOCKED
 
 
 class ComplianceService:
@@ -30,6 +50,69 @@ class ComplianceService:
     def __init__(self, db: AsyncSession, kyc_provider=None):
         self.db = db
         self.kyc_provider = kyc_provider
+
+    # Sanctions-check results that block trading until resolved.
+    BLOCKING_SANCTIONS_RESULTS = {"match", "pending_review"}
+
+    async def screen_user_for_matching(
+        self,
+        user_id,
+        recipient_info: Optional[dict] = None,
+    ) -> UserScreeningResult:
+        """Sanctions-screen a user (and their recipient) before an order or
+        liquidity deposit enters the P2P matching pool.
+
+        Mirrors ``_check_sanctions`` for transfers, but works on the platform
+        ``users`` table since matching orders have no ``Transfer`` row.
+        """
+        checks: List[dict] = []
+
+        def _block(check_type: str, details: str) -> UserScreeningResult:
+            checks.append({"type": check_type, "action": ComplianceAction.BLOCKED,
+                           "details": details, "risk_score": 100})
+            return UserScreeningResult(ComplianceAction.BLOCKED, details, checks)
+
+        user = await self.db.get(PlatformUser, user_id)
+        if user is None:
+            return _block(ComplianceCheckType.SANCTIONS.value, "User not found")
+
+        # 1. Sanctioned jurisdiction
+        if user.country_code in self.SANCTIONED_COUNTRIES:
+            return _block(ComplianceCheckType.SANCTIONS.value,
+                          f"User country {user.country_code} is sanctioned")
+
+        # 2. Most recent provider screening for this user
+        latest = (await self.db.execute(
+            select(SanctionsCheck)
+            .where(SanctionsCheck.user_id == user.id)
+            .order_by(SanctionsCheck.checked_at.desc())
+            .limit(1)
+        )).scalar_one_or_none()
+        if latest is not None and latest.result in self.BLOCKING_SANCTIONS_RESULTS:
+            return _block(ComplianceCheckType.SANCTIONS.value,
+                          f"User sanctions screening result: {latest.result} ({latest.provider})")
+
+        # 3. Name screening (user and recipient) against cached OFAC/UN/EU list
+        names = [("User", user.full_name)]
+        recipient = recipient_info or {}
+        if recipient.get("name"):
+            names.append(("Recipient", str(recipient["name"])))
+        recipient_country = recipient.get("country")
+        if recipient_country and str(recipient_country).upper() in self.SANCTIONED_COUNTRIES:
+            return _block(ComplianceCheckType.SANCTIONS.value,
+                          f"Recipient country {recipient_country} is sanctioned")
+        for label, name in names:
+            match = (await self.db.execute(
+                select(SanctionsList).where(SanctionsList.full_name == name).limit(1)
+            )).scalar_one_or_none()
+            if match:
+                return _block(ComplianceCheckType.SANCTIONS.value,
+                              f"{label} {name} matches {match.source} sanctions list")
+
+        checks.append({"type": ComplianceCheckType.SANCTIONS.value,
+                       "action": ComplianceAction.APPROVED,
+                       "details": "No sanctions matches", "risk_score": 0})
+        return UserScreeningResult(ComplianceAction.APPROVED, "All checks passed", checks)
 
     async def run_all_checks(self, transfer: Transfer) -> ComplianceResult:
         """Run the full compliance check suite on a transfer."""

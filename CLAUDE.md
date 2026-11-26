@@ -179,7 +179,25 @@ Instead of sending money across borders (expensive, slow, regulated), we MATCH p
 - `04_GLOBAL_CORRIDORS.md` -- Every country corridor with payment methods
 - `05_USER_PROFIT.md` -- How every stakeholder profits
 - `06_MARKET_RESEARCH.md` -- Competitive analysis, 88/100 originality, GitHub analysis
-- `07_LEGAL_STRATEGY.md` -- All regulatory paths, loopholes, $50K launch plan
+- `07_LEGAL_STRATEGY.md` -- All regulatory paths, loopholes, $50K launch plan (earliest and most optimistic; partly superseded by 19, 20, 22)
+- `08_HOW_MONEY_WORKS.md` -- From gold to digital dollars
+- `09_DOLLAR_EMPIRE_2.md` -- How tokenization reinforces the dollar
+- `10_BEAR_CASE_THREATS.md` -- 12 threats to the dollar-stablecoin thesis
+- `11_CARBON_CREDITS.md` -- How tokenized carbon connects to Ha_Chain
+- `12_ENERGY_AND_MINERALS.md` -- Energy and rare-earth foundations of the digital economy
+- `13_GEOPOLITICAL_RIVALRIES.md` -- How conflicts shape the financial system
+- `14_FUTURE_PREDICTIONS.md` -- Pattern recognition and what comes next
+- `15_MATCHING_FAILURE_ANALYSIS.md` -- Why P2P matching failed before and how Ha_Chain must adapt
+- `16_MATHEMATICAL_BREAKTHROUGH.md` -- Solving the 22:1 flow-imbalance problem
+- `17_B2B_ONBOARDING_STRATEGY.md` -- B2B targets and capturing reverse flows
+- `18_B2B_LEGAL_FRAMEWORK.md` -- B2B regulatory analysis (payment-processor exemptions)
+- `19_LAUNCH_COUNTRY_ANALYSIS.md` -- Somaliland bottlenecks; revised launch sequence (UAE/ADGM first)
+- `20_B2C_LEGAL_FRAMEWORK.md` -- USA-India corridor: Ha_Chain is likely a money transmitter; FEMA risk
+- `21_WRONG_VS_RIGHT_AND_HOW_TECH_FIXES_IT.md` -- Hawala's "wrongs" and the tech fixes (FEMA claim corrected)
+- `22_JURISDICTION_AND_FOUNDER_ANALYSIS.md` -- Whose law applies by engine location and founder nationality (US vs Indian founder, GIFT City, non-US corridors)
+- `diagrams/ha_chain_overview.excalidraw` -- Visual: matching flow + technical architecture (open at excalidraw.com)
+
+> **Legal reading order:** 20 → 22 → 19 → 18. Doc 07's "loopholes" framing and doc 21's compliance claims overstate the position. Retain qualified counsel before any real-money use.
 
 ### Technical Stack
 - **Backend**: Python FastAPI, PostgreSQL/SQLite, SQLAlchemy async, Redis, Celery

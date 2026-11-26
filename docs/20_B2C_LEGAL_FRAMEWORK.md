@@ -180,6 +180,8 @@ RBI could classify it as:
 
 **Strategy: DO NOT establish an Indian entity.**
 
+> **Caveat (Nov 2026, see doc 22):** This strategy only holds if no founder, staff or management is located in India. An India-resident founder is an Indian presence, faces personal FEMA exposure, may be restricted from owning a foreign financial-services entity under the Overseas Investment Rules 2022, and could make the offshore company Indian tax resident under POEM rules.
+
 - No Indian entity = no Indian license requirement
 - Indian participants use Ha_Chain as individuals from an offshore-licensed interface
 - Ha_Chain has no Indian presence, no Indian license

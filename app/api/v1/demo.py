@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import uuid as _uuid
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import get_db
+from app.config import get_settings
+from app.dependencies import get_current_user_id, get_db
 from app.models.matching import MatchOrder, Match, LocalPayment
 from app.services.matching_engine import MatchingEngine
 
@@ -56,6 +59,32 @@ async def faucet(
         "new_balance": wallet.balance,
         "credited": amount,
     }
+
+
+@demo_router.post("/kyc-verify", summary="Demo-only: auto-approve basic KYC for the caller")
+async def demo_kyc_verify(
+    user_id: _uuid.UUID = Depends(get_current_user_id),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stand-in for a real KYC provider so the web demo can place orders.
+
+    Requires the caller's JWT and only ever verifies the caller. Disabled
+    when ``APP_ENV=production``.
+    """
+    if get_settings().APP_ENV.lower() == "production":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not found")
+
+    from app.models.user import User
+    from app.services.kyc_service import KYCService
+
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not (user.is_verified and user.kyc_level >= 1):
+        kyc = KYCService(db)
+        record = await kyc.submit_verification(user_id, level=1, method="id_card")
+        await kyc.approve_verification(record.id, verified_by="demo-auto-approve")
+    return {"user_id": str(user_id), "kyc_level": user.kyc_level, "is_verified": user.is_verified}
 
 
 @demo_router.post("/match-now", summary="Trigger matching cycle manually")
@@ -214,6 +243,8 @@ async def run_scenario(db: AsyncSession = Depends(get_db)):
         full_name="Ali Khan",
         country_code="USA",
         default_currency="USD",
+        kyc_level=1,
+        is_verified=True,
     )
     db.add(ali)
     ali_wallet = UserWallet(user_id=ali_id, currency="USDC", balance=10000, is_primary=True)
@@ -229,13 +260,22 @@ async def run_scenario(db: AsyncSession = Depends(get_db)):
         full_name="Raj Patel",
         country_code="IND",
         default_currency="INR",
+        kyc_level=1,
+        is_verified=True,
     )
     db.add(raj)
     raj_wallet = UserWallet(user_id=raj_id, currency="USDC", balance=10000, is_primary=True)
     db.add(raj_wallet)
     await db.flush()
 
-    # Submit orders
+    # Submit orders -- through the same KYC + sanctions gate as the public API
+    from app.api.v1.matching import enforce_matching_compliance
+
+    ali_recipient = {"name": "Priya Sharma", "account": "priya@upi", "method": "upi"}
+    raj_recipient = {"name": "Mike Johnson", "account": "+14155559999", "method": "ach"}
+    await enforce_matching_compliance(db, ali_id, ali_recipient)
+    await enforce_matching_compliance(db, raj_id, raj_recipient)
+
     engine = MatchingEngine(db)
 
     ali_order = await engine.submit_order(
@@ -243,7 +283,7 @@ async def run_scenario(db: AsyncSession = Depends(get_db)):
         source_currency="USD",
         target_currency="INR",
         amount=send_amount_usd,
-        recipient_info={"name": "Priya Sharma", "account": "priya@upi", "method": "upi"},
+        recipient_info=ali_recipient,
     )
 
     raj_order = await engine.submit_order(
@@ -251,7 +291,7 @@ async def run_scenario(db: AsyncSession = Depends(get_db)):
         source_currency="INR",
         target_currency="USD",
         amount=receive_amount_inr,
-        recipient_info={"name": "Mike Johnson", "account": "+14155559999", "method": "ach"},
+        recipient_info=raj_recipient,
     )
 
     # Run matching

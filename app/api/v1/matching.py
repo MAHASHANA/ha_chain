@@ -5,6 +5,8 @@ All endpoints are under /api/v1/matching/.
 
 from __future__ import annotations
 
+import logging
+import uuid
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -24,12 +26,28 @@ from app.api.schemas.matching import (
     LiquidityWithdrawRequest,
     MatchEventResponse,
 )
+from app.dependencies import get_current_user_id
+from app.exceptions import KYCRequiredError
 from app.models.matching import MatchOrder, LiquidityPosition
+from app.services.compliance_service import ComplianceService
+from app.services.kyc_service import KYCService
 from app.services.matching_engine import MatchingEngine
 from app.services.pool_manager import PoolManager
 from app.services.liquidity_service import LiquidityService
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/matching", tags=["matching"])
+
+# Minimum KYC level required to place orders or provide liquidity.
+MATCHING_MIN_KYC_LEVEL = 1
+
+# Generic message for compliance rejections. Deliberately says nothing about
+# *why* (sanctions hit, SAR, review) to avoid tipping off the subject.
+COMPLIANCE_REJECTION_DETAIL = (
+    "This request cannot be processed at this time. Please contact support."
+)
+KYC_REQUIRED_DETAIL = "Identity verification (KYC) is required before using the matching pool."
 
 
 # ---------------------------------------------------------------------------
@@ -43,12 +61,31 @@ async def _get_db():
         yield session
 
 
-def _get_user_id_or_default(user_id: Optional[str] = Query(None, alias="user_id")) -> str:
-    """Temporary: accept user_id as query param.
+async def enforce_matching_compliance(
+    db: AsyncSession,
+    user_id: uuid.UUID | str,
+    recipient_info: Optional[dict] = None,
+) -> None:
+    """Gate entry to the matching pool: KYC first, then sanctions screening.
 
-    In production this would come from the JWT token via get_current_user_id.
+    Raises HTTP 403 on failure. Internal reasons are logged, never returned.
     """
-    return user_id or "anonymous"
+    try:
+        await KYCService(db).check_kyc_level(user_id, MATCHING_MIN_KYC_LEVEL)
+    except (KYCRequiredError, ValueError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=KYC_REQUIRED_DETAIL)
+
+    screening = await ComplianceService(db).screen_user_for_matching(
+        user_id, recipient_info=recipient_info,
+    )
+    if not screening.allowed:
+        logger.warning(
+            "Matching pool entry blocked by compliance: user=%s reason=%s",
+            user_id, screening.reason,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail=COMPLIANCE_REJECTION_DETAIL,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -95,14 +132,15 @@ async def estimate_match(
 )
 async def create_order(
     body: OrderCreateRequest,
-    user_id: str = Depends(_get_user_id_or_default),
+    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(_get_db),
 ):
-    """Submit an order to the P2P matching pool."""
+    """Submit an order to the P2P matching pool (KYC + sanctions gated)."""
+    await enforce_matching_compliance(db, user_id, body.recipient_info)
     engine = MatchingEngine(db)
     try:
         order = await engine.submit_order(
-            user_id=user_id,
+            user_id=str(user_id),
             source_currency=body.source_currency,
             target_currency=body.target_currency,
             amount=body.amount,
@@ -126,9 +164,18 @@ async def create_order(
 )
 async def get_order(
     order_id: str,
+    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(_get_db),
 ):
-    """Retrieve current status and details of a matching order."""
+    """Retrieve current status and details of one of the caller's orders."""
+    order = await _get_owned_order(db, order_id, user_id)
+    return OrderDetailResponse.model_validate(order)
+
+
+async def _get_owned_order(
+    db: AsyncSession, order_id: str, user_id: uuid.UUID,
+) -> MatchOrder:
+    """Load an order, 404 if missing, 403 if it belongs to someone else."""
     result = await db.execute(
         select(MatchOrder).where(MatchOrder.id == order_id)
     )
@@ -138,7 +185,12 @@ async def get_order(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Order not found",
         )
-    return OrderDetailResponse.model_validate(order)
+    if order.user_id != str(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not own this order",
+        )
+    return order
 
 
 # ---------------------------------------------------------------------------
@@ -152,18 +204,11 @@ async def get_order(
 )
 async def cancel_order(
     order_id: str,
+    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(_get_db),
 ):
-    """Cancel a pending or partially matched order."""
-    result = await db.execute(
-        select(MatchOrder).where(MatchOrder.id == order_id)
-    )
-    order = result.scalar_one_or_none()
-    if not order:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Order not found",
-        )
+    """Cancel one of the caller's pending or partially matched orders."""
+    order = await _get_owned_order(db, order_id, user_id)
     if order.status not in ("pending", "partially_matched"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -242,14 +287,15 @@ async def get_pool(
 )
 async def add_liquidity(
     body: LiquidityRequest,
-    user_id: str = Depends(_get_user_id_or_default),
+    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(_get_db),
 ):
-    """Deposit liquidity into a currency pool as an LP."""
+    """Deposit liquidity into a currency pool as an LP (KYC + sanctions gated)."""
+    await enforce_matching_compliance(db, user_id)
     liq_service = LiquidityService(db)
     try:
         position = await liq_service.add_liquidity(
-            user_id=user_id,
+            user_id=str(user_id),
             currency=body.currency,
             amount=body.amount,
         )
@@ -270,9 +316,24 @@ async def add_liquidity(
 async def remove_liquidity(
     position_id: str,
     body: Optional[LiquidityWithdrawRequest] = None,
+    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(_get_db),
 ):
-    """Withdraw liquidity from an LP position."""
+    """Withdraw liquidity from one of the caller's LP positions."""
+    position = (await db.execute(
+        select(LiquidityPosition).where(LiquidityPosition.id == position_id)
+    )).scalar_one_or_none()
+    if not position:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Position not found",
+        )
+    if position.user_id != str(user_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not own this position",
+        )
+
     liq_service = LiquidityService(db)
     withdraw_amount = body.amount if body else None
     result = await liq_service.remove_liquidity(position_id, withdraw_amount)
@@ -300,12 +361,12 @@ async def remove_liquidity(
     summary="List my LP positions",
 )
 async def list_positions(
-    user_id: str = Depends(_get_user_id_or_default),
+    user_id: uuid.UUID = Depends(get_current_user_id),
     db: AsyncSession = Depends(_get_db),
 ):
     """Get all liquidity positions for the authenticated user."""
     liq_service = LiquidityService(db)
-    positions = await liq_service.get_positions(user_id)
+    positions = await liq_service.get_positions(str(user_id))
     return [LiquidityPositionResponse.model_validate(p) for p in positions]
 
 

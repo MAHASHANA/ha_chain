@@ -450,6 +450,12 @@
       }
 
       if (!res.ok) {
+        // Expired/invalid JWT on an authenticated call: send the user back to login
+        if (res.status === 401 && useAuth && token) {
+          logout();
+          showPage('auth');
+          throw new Error('Session expired. Please log in again.');
+        }
         const msg = data.detail || JSON.stringify(data);
         throw new Error(msg);
       }
@@ -503,6 +509,9 @@
         localStorage.setItem('ha_token', token);
         localStorage.setItem('ha_user', JSON.stringify(user));
 
+        // Demo-only: auto-approve basic KYC so the user can use the matching pool
+        try { await api('POST', '/demo/kyc-verify'); } catch (_) {}
+
         // Auto-claim faucet for new users
         try {
           await fetch(API + '/demo/faucet?user_id=' + data.id + '&amount=1000&currency=USDC', { method: 'POST' });
@@ -544,6 +553,10 @@
         localStorage.setItem('ha_token', token);
         localStorage.setItem('ha_user', JSON.stringify(user));
         localStorage.setItem('ha_refresh', data.refresh_token);
+
+        // Demo-only: make sure accounts created before KYC gating can still trade
+        try { await api('POST', '/demo/kyc-verify'); } catch (_) {}
+
         toast('Logged in!', 'success');
         enterApp();
       } catch (err) {
@@ -798,7 +811,7 @@
       }
 
       try {
-        const data = await api('POST', '/matching/orders?user_id=' + user.id, {
+        const data = await api('POST', '/matching/orders', {
           source_currency: source,
           target_currency: target,
           amount: parseFloat(document.getElementById('send-amount').value),
@@ -808,7 +821,7 @@
             method: getPaymentMethod(target),
           },
           max_wait_hours: 4,
-        }, false);
+        });
 
         toast(`Order submitted! ID: ${data.id.slice(0,8)}... Status: ${data.status}`, 'success');
 

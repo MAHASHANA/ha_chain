@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.exceptions import KYCRequiredError
-from app.models.kyc import KYCRecord
+from app.models.kyc import KYCVerification
 from app.models.user import User
 
 
@@ -20,79 +20,87 @@ class KYCService:
 
     async def submit_verification(
         self,
-        user_id: uuid.UUID,
+        user_id: uuid.UUID | str,
         *,
-        level_requested: int,
-        document_type: str,
-        document_number: str | None = None,
-        document_country: str,
-        extra_data: dict | None = None,
-    ) -> KYCRecord:
-        """Submit a new KYC verification request."""
-        record = KYCRecord(
+        level: int,
+        method: str,
+        document_type: str | None = None,
+        document_hash: str | None = None,
+        biometric_hash: str | None = None,
+    ) -> KYCVerification:
+        """Submit a new KYC verification request (status ``pending``)."""
+        record = KYCVerification(
             user_id=user_id,
-            level_requested=level_requested,
+            level=level,
+            method=method,
             document_type=document_type,
-            document_number=document_number,
-            document_country=document_country,
-            extra_data=extra_data,
+            document_hash=document_hash,
+            biometric_hash=biometric_hash,
+            status="pending",
         )
         self.db.add(record)
         await self.db.flush()
         return record
 
     async def approve_verification(
-        self, kyc_id: uuid.UUID, verified_by: uuid.UUID
-    ) -> KYCRecord:
+        self, kyc_id: uuid.UUID | str, verified_by: uuid.UUID | str
+    ) -> KYCVerification:
         """Approve a pending KYC request and upgrade the user's KYC level."""
-        result = await self.db.execute(select(KYCRecord).where(KYCRecord.id == kyc_id))
-        record = result.scalar_one_or_none()
+        record = await self.db.get(KYCVerification, kyc_id)
         if not record:
             raise ValueError(f"KYC record {kyc_id} not found")
 
         record.status = "approved"
         record.verified_at = datetime.now(timezone.utc)
-        record.verified_by = verified_by
+        record.verified_by = str(verified_by)
 
-        # Upgrade user KYC level
-        user_q = await self.db.execute(select(User).where(User.id == record.user_id))
-        user = user_q.scalar_one()
-        if record.level_requested > user.kyc_level:
-            user.kyc_level = record.level_requested
-            user.is_verified = True
+        # Upgrade user KYC level. ``db.get`` binds via the column type, which
+        # stays correct when SQLite dev mode swaps UUID columns for String(36).
+        user = await self.db.get(User, record.user_id)
+        if user is None:
+            raise ValueError(f"User {record.user_id} not found")
+        if record.level > user.kyc_level:
+            user.kyc_level = record.level
+        user.is_verified = True
 
         await self.db.flush()
         return record
 
     async def reject_verification(
-        self, kyc_id: uuid.UUID, reason: str, rejected_by: uuid.UUID
-    ) -> KYCRecord:
-        result = await self.db.execute(select(KYCRecord).where(KYCRecord.id == kyc_id))
-        record = result.scalar_one_or_none()
+        self, kyc_id: uuid.UUID | str, rejected_by: uuid.UUID | str
+    ) -> KYCVerification:
+        record = await self.db.get(KYCVerification, kyc_id)
         if not record:
             raise ValueError(f"KYC record {kyc_id} not found")
 
         record.status = "rejected"
-        record.rejection_reason = reason
         record.verified_at = datetime.now(timezone.utc)
-        record.verified_by = rejected_by
+        record.verified_by = str(rejected_by)
         await self.db.flush()
         return record
 
-    async def get_user_verifications(self, user_id: uuid.UUID) -> Sequence[KYCRecord]:
+    async def get_user_verifications(
+        self, user_id: uuid.UUID | str
+    ) -> Sequence[KYCVerification]:
         result = await self.db.execute(
-            select(KYCRecord)
-            .where(KYCRecord.user_id == user_id)
-            .order_by(KYCRecord.created_at.desc())
+            select(KYCVerification)
+            .where(KYCVerification.user_id == user_id)
+            .order_by(KYCVerification.created_at.desc())
         )
         return result.scalars().all()
 
-    async def check_kyc_level(self, user_id: uuid.UUID, required_level: int) -> bool:
-        """Return ``True`` if the user meets the required KYC level, else raise."""
-        user_q = await self.db.execute(select(User).where(User.id == user_id))
-        user = user_q.scalar_one_or_none()
+    async def check_kyc_level(self, user_id: uuid.UUID | str, required_level: int) -> bool:
+        """Return ``True`` if the user meets the required KYC level, else raise.
+
+        Raises ``ValueError`` if the user does not exist and
+        ``KYCRequiredError`` if the user is inactive, unverified, or below
+        ``required_level``.
+        """
+        user = await self.db.get(User, user_id)
         if not user:
             raise ValueError(f"User {user_id} not found")
-        if user.kyc_level < required_level:
+        if not user.is_active or user.deleted_at is not None:
+            raise KYCRequiredError(required_level=required_level, current_level=0)
+        if not user.is_verified or user.kyc_level < required_level:
             raise KYCRequiredError(required_level=required_level, current_level=user.kyc_level)
         return True
